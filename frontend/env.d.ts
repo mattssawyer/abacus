@@ -1,1 +1,18 @@
 /// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_API_BASE_URL: string
+}
+
+interface Window {
+  Plaid: {
+    create(config: {
+      token: string
+      onSuccess(publicToken: string, metadata: unknown): void
+      onExit(error: unknown, metadata: unknown): void
+    }): {
+      open(): void
+      destroy(): void
+    }
+  }
+}
