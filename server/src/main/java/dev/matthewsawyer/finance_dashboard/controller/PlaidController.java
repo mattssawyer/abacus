@@ -16,6 +16,7 @@ import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidPublicTokenRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
+import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -41,17 +42,20 @@ public class PlaidController {
     private final PlaidItemRepository plaidItemRepository;
     private final PlaidPublicTokenRepository plaidPublicTokenRepository;
     private final UserService userService;
+    private final PlaidTokenEncryption tokenEncryption;
 
     public PlaidController(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
             PlaidPublicTokenRepository plaidPublicTokenRepository,
-            UserService userService
+            UserService userService,
+            PlaidTokenEncryption tokenEncryption
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
         this.plaidPublicTokenRepository = plaidPublicTokenRepository;
         this.userService = userService;
+        this.tokenEncryption = tokenEncryption;
     }
 
     @PostMapping("/create-link-token")
@@ -105,7 +109,9 @@ public class PlaidController {
         }
 
         ItemPublicTokenExchangeResponse exchange = response.body();
-        plaidItemRepository.save(new PlaidItem(exchange.getItemId(), exchange.getAccessToken(), user.getId()));
+        String encryptedToken = tokenEncryption.encrypt(
+                exchange.getAccessToken(), user.getId(), exchange.getItemId());
+        plaidItemRepository.save(new PlaidItem(exchange.getItemId(), encryptedToken, user.getId()));
         plaidPublicTokenRepository.delete(storedToken);
 
         return Map.of("item_id", exchange.getItemId());
@@ -126,7 +132,8 @@ public class PlaidController {
                 );
 
         AccountsGetRequest request = new AccountsGetRequest()
-                .accessToken(plaidItem.getAccessToken());
+                .accessToken(tokenEncryption.decrypt(
+                        plaidItem.getEncryptedAccessToken(), user.getId(), plaidItem.getItemId()));
 
         Response<AccountsGetResponse> response = plaidApi.accountsGet(request).execute();
         if (!response.isSuccessful() || response.body() == null) {

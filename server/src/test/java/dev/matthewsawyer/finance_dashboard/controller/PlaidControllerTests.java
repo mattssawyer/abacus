@@ -11,8 +11,10 @@ import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidPublicTokenRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
+import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import dev.matthewsawyer.finance_dashboard.TestPlaidKeysets;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -31,6 +33,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -60,6 +63,8 @@ class PlaidControllerTests {
     @Mock
     private Call<AccountsGetResponse> accountsCall;
 
+    private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
+            TestPlaidKeysets.create());
     private PlaidController controller;
     private Jwt jwt;
     private User user;
@@ -70,7 +75,8 @@ class PlaidControllerTests {
                 plaidApi,
                 plaidItemRepository,
                 plaidPublicTokenRepository,
-                userService
+                userService,
+                tokenEncryption
         );
         jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
@@ -136,7 +142,10 @@ class PlaidControllerTests {
         assertEquals("saved-public-token", requestCaptor.getValue().getPublicToken());
         assertEquals("item-id", result.get("item_id"));
         assertEquals("item-id", itemCaptor.getValue().getItemId());
-        assertEquals("access-token", itemCaptor.getValue().getAccessToken());
+        String encrypted = itemCaptor.getValue().getEncryptedAccessToken();
+        assertNotEquals("access-token", encrypted);
+        assertEquals("access-token", tokenEncryption.decrypt(encrypted, USER_ID, "item-id"));
+        assertEquals(Map.of("item_id", "item-id"), result);
         assertEquals(USER_ID, itemCaptor.getValue().getUserId());
     }
 
@@ -156,7 +165,8 @@ class PlaidControllerTests {
 
     @Test
     void getsAccountsUsingStoredAccessToken() throws IOException {
-        PlaidItem plaidItem = new PlaidItem("item-id", "access-token", USER_ID);
+        PlaidItem plaidItem = new PlaidItem("item-id",
+                tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
         AccountsGetResponse plaidResponse = new AccountsGetResponse();
 
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
@@ -172,6 +182,16 @@ class PlaidControllerTests {
 
         assertSame(plaidResponse, result);
         assertEquals("access-token", requestCaptor.getValue().getAccessToken());
+    }
+
+    @Test
+    void refusesPlaintextStoredTokenBeforeCallingPlaid() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID))
+                .thenReturn(Optional.of(new PlaidItem("item-id", "access-token", USER_ID)));
+
+        assertThrows(IllegalStateException.class, () -> controller.getAccounts(jwt, "item-id"));
+        verifyNoInteractions(plaidApi);
     }
 
     @Test

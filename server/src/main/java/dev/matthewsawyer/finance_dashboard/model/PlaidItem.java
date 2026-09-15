@@ -15,8 +15,8 @@ public class PlaidItem {
     @Column(name = "item_id", nullable = false, updatable = false)
     private String itemId;
 
-    @Column(name = "access_token", nullable = false, length = 512)
-    private String accessToken;
+    @Column(name = "access_token_encrypted", nullable = false, columnDefinition = "TEXT")
+    private String encryptedAccessToken;
 
     @Column(name = "user_id", nullable = false, updatable = false)
     private UUID userId;
@@ -24,9 +24,9 @@ public class PlaidItem {
     protected PlaidItem() {
     }
 
-    public PlaidItem(String itemId, String accessToken, UUID userId) {
+    public PlaidItem(String itemId, String encryptedAccessToken, UUID userId) {
         this.itemId = itemId;
-        this.accessToken = accessToken;
+        this.encryptedAccessToken = encryptedAccessToken;
         this.userId = userId;
     }
 
@@ -34,8 +34,8 @@ public class PlaidItem {
         return itemId;
     }
 
-    public String getAccessToken() {
-        return accessToken;
+    public String getEncryptedAccessToken() {
+        return encryptedAccessToken;
     }
 
     public UUID getUserId() {

@@ -1,1 +1,101 @@
 # Abacus
+
+A personal finance dashboard for connecting bank accounts and viewing account balances in one place.
+
+Abacus is in early development. The current integration uses Plaid Sandbox.
+
+## Features
+
+- Sign in with Clerk.
+- Connect financial accounts through Plaid Link.
+- View connected account details, current balances, and available balances.
+- Store user and account connections in PostgreSQL.
+
+## Tech stack
+
+- **Frontend:** Vue 3, TypeScript, Vite, Tailwind CSS
+- **Backend:** Java 17, Spring Boot, Spring Security, Spring Data JPA
+- **Database:** PostgreSQL 16 with Flyway migrations
+- **Integrations:** Clerk for authentication and Plaid for financial account data
+
+## Getting started
+
+### Prerequisites
+
+- Node.js 22.18+ within v22, or 24.12+; npm
+- Java 17
+- Docker with Docker Compose
+- Clerk and Plaid Sandbox credentials
+
+### 1. Start the database
+
+From the repository root:
+
+```sh
+docker compose up -d
+```
+
+### 2. Configure and start the backend
+
+```sh
+cd server
+cp .env.example .env
+```
+
+Fill in the Clerk and Plaid values in `.env`. Configure the token encryption keyset
+using the [encryption setup guide](docs/plaid-token-encryption.md).
+The database defaults match the local Docker Compose configuration.
+
+```sh
+./gradlew bootRun
+```
+
+The API runs at `http://localhost:8080/api`. Flyway creates the schema on a fresh database.
+
+The initial migrations may change during pre-production development. If you have
+already run older versions, reset the local database before restarting the backend.
+From the repository root:
+
+```sh
+docker compose down -v
+docker compose up -d
+```
+
+This deletes all local database data. Plain `docker compose down` keeps the named
+volume and its tables.
+
+### 3. Configure and start the frontend
+
+In a separate terminal, create `frontend/.env` with:
+
+```dotenv
+VITE_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
+VITE_API_BASE_URL=http://localhost:8080/api
+```
+
+Use the same Clerk application configured for the backend, then run:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+Open `http://localhost:5173` to sign in and connect a sandbox account.
+
+## Development commands
+
+| Directory | Command | Purpose |
+| --- | --- | --- |
+| `server/` | `./gradlew test` | Run backend tests |
+| `frontend/` | `npm run build` | Type-check and build the frontend |
+| `frontend/` | `npm run lint` | Lint and apply fixes |
+
+## Project structure
+
+```text
+frontend/     Vue application
+server/       Spring Boot API and database migrations
+docs/         Additional setup documentation
+compose.yaml  Local PostgreSQL service
+```
