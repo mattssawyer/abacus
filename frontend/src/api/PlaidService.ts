@@ -24,11 +24,12 @@ export async function createLinkToken(): Promise<string> {
   return data.link_token
 }
 
-export async function exchangePublicToken(publicToken: string): Promise<string> {
-  const { data } = await apiClient.post<{ item_id: string }>('/plaid/exchange-public-token', {
-    publicToken,
-  })
+export async function savePublicToken(publicToken: string): Promise<void> {
+  await apiClient.post('/plaid/public-tokens', { publicToken })
+}
 
+export async function exchangePublicToken(): Promise<string> {
+  const { data } = await apiClient.post<{ item_id: string }>('/plaid/exchange-public-token')
   return data.item_id
 }
 
