@@ -13,7 +13,7 @@ Abacus is in early development. The current integration uses Plaid Sandbox.
 
 ## Tech stack
 
-- **Frontend:** Vue 3, TypeScript, Vite, Tailwind CSS
+- **Frontend:** Vue 3, TypeScript, Vite, Tailwind CSS, PrimeVue 5
 - **Backend:** Java 17, Spring Boot, Spring Security, Spring Data JPA
 - **Database:** PostgreSQL 16 with Flyway migrations
 - **Integrations:** Clerk for authentication and Plaid for financial account data

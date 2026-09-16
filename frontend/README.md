@@ -1,6 +1,45 @@
 # Abacus (frontend)
 
-This template should help get you started developing with Vue 3 in Vite.
+The Abacus frontend uses Vue 3, TypeScript, Vite, Tailwind CSS, and PrimeVue 5.
+Clerk handles authentication.
+
+## UI components
+
+PrimeVue is the primary component library. Import only the components needed by
+a page, for example:
+
+```vue
+<script setup lang="ts">
+import Button from 'primevue/button'
+</script>
+
+<template>
+  <Button label="Continue" />
+</template>
+```
+
+`src/main.ts` registers the PrimeVue plugin. `src/theme.ts` defines the shared
+warm graphite preset based on Aura from `@primeuix/themes`. Customize shared
+colors and component design tokens there, and use scoped CSS for page layout.
+Dark mode is currently disabled.
+
+shadcn-vue may be used for additional components or customization when needed;
+it is not currently installed.
+
+## PrimeUI license
+
+Add the license key to `.env.local`, which is ignored by Git:
+
+```dotenv
+VITE_PRIMEUI_LICENSE_KEY=your_primeui_license_key
+```
+
+The PrimeVue plugin reads this variable in `src/main.ts`. Restart the dev server
+after changing it. For deployment, set it before building and rebuild the
+frontend. The value is included in the browser bundle for client-side license
+validation.
+
+See the [project README](../README.md) for backend and authentication setup.
 
 ## Recommended IDE Setup
 

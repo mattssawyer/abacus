@@ -1,6 +1,8 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { clerkPlugin } from '@clerk/vue'
+import PrimeVue from 'primevue/config'
+import theme from './theme'
 
 import App from './App.vue'
 import router from './router'
@@ -15,6 +17,13 @@ if (!publishableKey) {
 
 const app = createApp(App)
 
+app.use(PrimeVue, {
+  license: import.meta.env.VITE_PRIMEUI_LICENSE_KEY,
+  theme: {
+    preset: theme,
+    options: { darkModeSelector: false },
+  },
+})
 app.use(createPinia())
 app.use(router)
 app.use(clerkPlugin, { publishableKey })

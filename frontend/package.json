@@ -17,8 +17,10 @@
   },
   "dependencies": {
     "@clerk/vue": "^2.5.1",
+    "@primeuix/themes": "^3.0.0",
     "axios": "^1.20.0",
     "pinia": "^4.0.2",
+    "primevue": "^5.0.1",
     "vue": "^3.5.40",
     "vue-router": "^5.2.0"
   },
