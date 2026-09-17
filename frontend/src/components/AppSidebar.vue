@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
-import Avatar from 'primevue/avatar'
+import { House } from '@lucide/vue'
 import Sidebar from 'primevue/sidebar'
 import SidebarAside from 'primevue/sidebaraside'
 import SidebarContent from 'primevue/sidebarcontent'
@@ -10,28 +10,34 @@ import SidebarMenuButton from 'primevue/sidebarmenubutton'
 import SidebarMenuItem from 'primevue/sidebarmenuitem'
 import SidebarPanel from 'primevue/sidebarpanel'
 import SidebarSpacer from 'primevue/sidebarspacer'
+
+const logoUrl = `${import.meta.env.BASE_URL}logo.svg`
 </script>
 
 <template>
-  <Sidebar id="app-sidebar" collapsible="none">
+  <Sidebar id="app-sidebar" collapsible="none" width="var(--app-sidebar-width)">
     <SidebarSpacer />
     <SidebarAside aria-label="Main navigation">
-      <SidebarPanel>
+      <SidebarPanel class="sidebar-panel">
         <SidebarHeader>
-          <div class="sidebar-brand">
-            <Avatar label="A" shape="circle" aria-hidden="true" />
-            <span>Abacus</span>
+          <div class="sidebar-brand" aria-label="Abacus">
+            <img :src="logoUrl" alt="" width="32" height="32" />
+            <span class="sidebar-label">Abacus</span>
           </div>
         </SidebarHeader>
         <SidebarContent>
-          <nav aria-label="Dashboard navigation">
+          <nav aria-label="Dashboard navigation" class="sidebar-nav">
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton :as="RouterLink" to="/" :is-active="true" aria-current="page">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
-                    <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z" />
-                  </svg>
-                  <span>Home</span>
+                <SidebarMenuButton
+                  :as="RouterLink"
+                  to="/"
+                  :is-active="true"
+                  aria-current="page"
+                  aria-label="Home"
+                >
+                  <House :size="18" :stroke-width="1.75" aria-hidden="true" />
+                  <span class="sidebar-label">Home</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
@@ -43,16 +49,37 @@ import SidebarSpacer from 'primevue/sidebarspacer'
 </template>
 
 <style scoped>
+.sidebar-panel {
+  border-right: 1px solid var(--app-border);
+}
+
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.5rem;
 }
 
 .sidebar-brand span {
-  font-size: 1.25rem;
-  font-weight: 650;
-  letter-spacing: -0.035em;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.sidebar-nav {
+  padding-inline: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .sidebar-label {
+    display: none;
+  }
+
+  .sidebar-brand {
+    justify-content: center;
+  }
+
+  .sidebar-nav {
+    padding-inline: 0;
+  }
 }
 </style>

@@ -120,6 +120,17 @@ public class PlaidController {
     public record SavePublicTokenRequest(String publicToken) {
     }
 
+    @GetMapping("/items")
+    public Map<String, List<String>> getLinkedItems(@AuthenticationPrincipal Jwt jwt) {
+        User user = userService.getOrCreateUser(jwt);
+        List<String> itemIds = plaidItemRepository.findAllByUserIdOrderByItemIdAsc(user.getId())
+                .stream()
+                .map(PlaidItem::getItemId)
+                .toList();
+
+        return Map.of("item_ids", itemIds);
+    }
+
     @GetMapping("/items/{itemId}/accounts")
     public AccountsGetResponse getAccounts(
             @AuthenticationPrincipal Jwt jwt,
@@ -140,7 +151,6 @@ public class PlaidController {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid accounts get failed");
         }
 
-        System.out.println(response.body().getAccounts());
         return response.body();
     }
 }

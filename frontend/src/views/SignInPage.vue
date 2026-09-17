@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { SignInButton, SignUpButton, useAuth } from '@clerk/vue'
-import Avatar from 'primevue/avatar'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Divider from 'primevue/divider'
 
 const { isLoaded } = useAuth()
+const logoUrl = `${import.meta.env.BASE_URL}logo.svg`
 </script>
 
 <template>
   <main class="sign-in-page" aria-labelledby="sign-in-title">
     <div class="sign-in-layout">
       <div class="sign-in-brand" aria-label="Abacus">
-        <img src="../../public/logo.svg" alt="Abacus" class="sign-in-logo" />
+        <img :src="logoUrl" alt="" class="sign-in-logo" />
         <span>Abacus</span>
       </div>
 
@@ -20,9 +20,7 @@ const { isLoaded } = useAuth()
         <template #title>
           <h1 id="sign-in-title">Your finances, together.</h1>
         </template>
-        <template #subtitle>
-          Sign in or create an account to get started
-        </template>
+        <template #subtitle> Sign in or create an account to get started </template>
         <template #content>
           <div class="sign-in-actions" :aria-busy="!isLoaded">
             <SignInButton>
@@ -73,7 +71,7 @@ const { isLoaded } = useAuth()
   justify-content: center;
   gap: 0.75rem;
   margin-bottom: 2rem;
-  font-size: 1.5rem;
+  font-size: 1.125rem;
 }
 
 .sign-in-logo {
@@ -81,18 +79,19 @@ const { isLoaded } = useAuth()
 }
 
 .sign-in-brand span {
-  font-weight: 650;
+  font-weight: 550;
   letter-spacing: -0.035em;
 }
 
 .sign-in-card {
   --p-card-body-padding: clamp(1.5rem, 5vw, 2.5rem);
-  --p-card-border-radius: 1rem;
+  --p-card-border-radius: var(--app-panel-radius);
+  border: 1px solid var(--app-border);
 }
 
 h1 {
-  font-size: clamp(1.5rem, 5vw, 1.875rem);
-  font-weight: 650;
+  font-size: clamp(1.5rem, 5vw, 1.75rem);
+  font-weight: 550;
   line-height: 1.25;
   letter-spacing: -0.04em;
   margin-bottom: 0.5rem;
@@ -102,14 +101,8 @@ h1 {
   padding-top: 1.25rem;
 }
 
-.sign-in-secondary,
-.sign-in-note {
+.sign-in-secondary {
   color: var(--p-text-muted-color);
   font-size: 0.875rem;
-}
-
-.sign-in-note {
-  text-align: center;
-  line-height: 1.6;
 }
 </style>

@@ -6,6 +6,7 @@ export interface PlaidAccount {
     available: number | null
     current: number | null
     iso_currency_code: string | null
+    unofficial_currency_code?: string | null
     limit: number | null
   }
   mask: string | null
@@ -31,6 +32,11 @@ export async function savePublicToken(publicToken: string): Promise<void> {
 export async function exchangePublicToken(): Promise<string> {
   const { data } = await apiClient.post<{ item_id: string }>('/plaid/exchange-public-token')
   return data.item_id
+}
+
+export async function getLinkedItemIds(): Promise<string[]> {
+  const { data } = await apiClient.get<{ item_ids: string[] }>('/plaid/items')
+  return data.item_ids
 }
 
 export async function getAccounts(itemId: string): Promise<PlaidAccount[]> {

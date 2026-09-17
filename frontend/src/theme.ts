@@ -2,7 +2,13 @@ import { definePreset } from '@primeuix/themes'
 import Aura from '@primeuix/themes/aura'
 
 export default definePreset(Aura, {
+  primitive: {
+    borderRadius: { sm: '6px', md: '8px', lg: '10px', xl: '16px' },
+  },
   semantic: {
+    typography: { fontFamily: 'var(--app-font)', fontSize: '0.875rem' },
+    focusRing: { width: '2px', offset: '3px' },
+    content: { borderColor: 'var(--app-border)' },
     primary: {
       50: '#faf8f5',
       100: '#efebe6',
@@ -41,6 +47,30 @@ export default definePreset(Aura, {
     },
   },
   components: {
+    button: {
+      root: { paddingX: '0.875rem', paddingY: '0.625rem', borderRadius: '10px' },
+    },
+    card: {
+      root: { borderRadius: '16px', shadow: 'var(--app-shadow)' },
+    },
+    sidebar: {
+      layout: { background: 'var(--app-canvas)' },
+      main: { background: 'var(--app-canvas)' },
+      panel: { background: 'var(--app-sidebar)' },
+      header: { padding: '1.5rem 0.75rem', gap: '0.75rem' },
+      content: { gap: '0.5rem' },
+      menuButton: {
+        height: '2.5rem',
+        padding: '0.625rem 0.75rem',
+        borderRadius: '10px',
+        fontSize: '0.875rem',
+        fontWeight: '500',
+        gap: '0.75rem',
+        activeBackground: 'var(--app-surface)',
+        activeColor: '{text.color}',
+        focusBackground: '{surface.100}',
+      },
+    },
     avatar: {
       root: {
         background: '{primary.100}',

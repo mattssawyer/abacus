@@ -27,6 +27,7 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -161,6 +162,30 @@ class PlaidControllerTests {
 
         assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
         verifyNoInteractions(plaidApi, plaidItemRepository);
+    }
+
+    @Test
+    void listsOnlyItemIdsForCurrentUser() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(
+                new PlaidItem("item-one", "encrypted-token-one", USER_ID),
+                new PlaidItem("item-two", "encrypted-token-two", USER_ID)
+        ));
+
+        Map<String, List<String>> result = controller.getLinkedItems(jwt);
+
+        assertEquals(Map.of("item_ids", List.of("item-one", "item-two")), result);
+        verify(plaidItemRepository).findAllByUserIdOrderByItemIdAsc(USER_ID);
+        verifyNoInteractions(plaidApi, plaidPublicTokenRepository);
+    }
+
+    @Test
+    void returnsEmptyItemsForUserWithoutConnections() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
+
+        assertEquals(Map.of("item_ids", List.of()), controller.getLinkedItems(jwt));
+        verifyNoInteractions(plaidApi);
     }
 
     @Test

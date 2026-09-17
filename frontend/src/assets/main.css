@@ -1,4 +1,18 @@
-@import "./base.css";
+@import './base.css';
+
+:root {
+  --app-font: 'Geist Variable', system-ui, sans-serif;
+  --app-canvas: #faf8f5;
+  --app-sidebar: #f4f1ed;
+  --app-surface: #ffffff;
+  --app-border: #e8e3dd;
+  --app-text: #262626;
+  --app-muted: #716b64;
+  --app-radius: 0.625rem;
+  --app-panel-radius: 1rem;
+  --app-shadow: 0 1px 3px rgb(47 41 38 / 4%);
+  --app-sidebar-width: 14rem;
+}
 
 #app,
 body {
@@ -7,6 +21,16 @@ body {
 
 body {
   min-width: 320px;
-  color: var(--p-text-color, #262626);
-  background: var(--p-surface-50, #faf8f5);
+  color: var(--app-text);
+  background: var(--app-canvas);
+}
+
+.lucide {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --app-sidebar-width: 4.5rem;
+  }
 }
