@@ -1,5 +1,0 @@
-CREATE TABLE plaid_public_tokens (
-    user_id UUID PRIMARY KEY REFERENCES users(id),
-    public_token VARCHAR(512) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);

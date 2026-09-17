@@ -6,12 +6,12 @@ import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
-import dev.matthewsawyer.finance_dashboard.model.PlaidPublicToken;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
-import dev.matthewsawyer.finance_dashboard.repository.PlaidPublicTokenRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
+import okhttp3.MediaType;
+import okhttp3.ResponseBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import dev.matthewsawyer.finance_dashboard.TestPlaidKeysets;
@@ -53,9 +53,6 @@ class PlaidControllerTests {
     private PlaidItemRepository plaidItemRepository;
 
     @Mock
-    private PlaidPublicTokenRepository plaidPublicTokenRepository;
-
-    @Mock
     private UserService userService;
 
     @Mock
@@ -75,7 +72,6 @@ class PlaidControllerTests {
         controller = new PlaidController(
                 plaidApi,
                 plaidItemRepository,
-                plaidPublicTokenRepository,
                 userService,
                 tokenEncryption
         );
@@ -88,80 +84,65 @@ class PlaidControllerTests {
     }
 
     @Test
-    void savesPublicTokenForCurrentUser() {
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-
-        controller.savePublicToken(
-                jwt,
-                new PlaidController.SavePublicTokenRequest("public-token")
-        );
-
-        ArgumentCaptor<PlaidPublicToken> tokenCaptor = ArgumentCaptor.forClass(PlaidPublicToken.class);
-        verify(plaidPublicTokenRepository).save(tokenCaptor.capture());
-
-        assertEquals(USER_ID, tokenCaptor.getValue().getUserId());
-        assertEquals("public-token", tokenCaptor.getValue().getPublicToken());
-    }
-
-    @Test
     void rejectsBlankPublicToken() {
         ResponseStatusException exception = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.savePublicToken(
+                () -> controller.exchangePublicToken(
                         jwt,
-                        new PlaidController.SavePublicTokenRequest(" ")
+                        new PlaidController.ExchangePublicTokenRequest(" ")
                 )
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        verifyNoInteractions(userService, plaidPublicTokenRepository, plaidApi, plaidItemRepository);
+        verifyNoInteractions(userService, plaidApi, plaidItemRepository);
     }
 
     @Test
-    void exchangesSavedPublicTokenAndStoresAccessToken() throws IOException {
-        PlaidPublicToken storedToken = new PlaidPublicToken(USER_ID, "saved-public-token");
+    void exchangesPublicTokenAndStoresEncryptedAccessToken() throws IOException {
         ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
                 .itemId("item-id")
                 .accessToken("access-token")
                 .requestId("request-id");
 
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidPublicTokenRepository.findById(USER_ID)).thenReturn(Optional.of(storedToken));
         when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
                 .thenReturn(exchangeCall);
         when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
 
-        Map<String, String> result = controller.exchangePublicToken(jwt);
+        Map<String, String> result = controller.exchangePublicToken(
+                jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
 
         ArgumentCaptor<ItemPublicTokenExchangeRequest> requestCaptor =
                 ArgumentCaptor.forClass(ItemPublicTokenExchangeRequest.class);
         ArgumentCaptor<PlaidItem> itemCaptor = ArgumentCaptor.forClass(PlaidItem.class);
         verify(plaidApi).itemPublicTokenExchange(requestCaptor.capture());
         verify(plaidItemRepository).save(itemCaptor.capture());
-        verify(plaidPublicTokenRepository).delete(storedToken);
 
-        assertEquals("saved-public-token", requestCaptor.getValue().getPublicToken());
-        assertEquals("item-id", result.get("item_id"));
+        assertEquals("public-token", requestCaptor.getValue().getPublicToken());
+        assertEquals(Map.of("item_id", "item-id"), result);
         assertEquals("item-id", itemCaptor.getValue().getItemId());
         String encrypted = itemCaptor.getValue().getEncryptedAccessToken();
         assertNotEquals("access-token", encrypted);
         assertEquals("access-token", tokenEncryption.decrypt(encrypted, USER_ID, "item-id"));
-        assertEquals(Map.of("item_id", "item-id"), result);
         assertEquals(USER_ID, itemCaptor.getValue().getUserId());
     }
 
     @Test
-    void returnsNotFoundWhenNoPublicTokenIsSaved() {
+    void doesNotStoreItemWhenPlaidExchangeFails() throws IOException {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidPublicTokenRepository.findById(USER_ID)).thenReturn(Optional.empty());
+        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
+                .thenReturn(exchangeCall);
+        when(exchangeCall.execute()).thenReturn(
+                Response.error(500, ResponseBody.create("{}", MediaType.get("application/json"))));
 
         ResponseStatusException exception = assertThrows(
                 ResponseStatusException.class,
-                () -> controller.exchangePublicToken(jwt)
+                () -> controller.exchangePublicToken(
+                        jwt, new PlaidController.ExchangePublicTokenRequest("public-token"))
         );
 
-        assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
-        verifyNoInteractions(plaidApi, plaidItemRepository);
+        assertEquals(HttpStatus.BAD_GATEWAY, exception.getStatusCode());
+        verifyNoInteractions(plaidItemRepository);
     }
 
     @Test
@@ -176,7 +157,7 @@ class PlaidControllerTests {
 
         assertEquals(Map.of("item_ids", List.of("item-one", "item-two")), result);
         verify(plaidItemRepository).findAllByUserIdOrderByItemIdAsc(USER_ID);
-        verifyNoInteractions(plaidApi, plaidPublicTokenRepository);
+        verifyNoInteractions(plaidApi);
     }
 
     @Test

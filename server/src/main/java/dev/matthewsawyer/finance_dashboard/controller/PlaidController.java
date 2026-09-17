@@ -11,10 +11,8 @@ import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.model.Products;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
-import dev.matthewsawyer.finance_dashboard.model.PlaidPublicToken;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
-import dev.matthewsawyer.finance_dashboard.repository.PlaidPublicTokenRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
 import org.springframework.http.HttpStatus;
@@ -25,7 +23,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import retrofit2.Response;
@@ -40,20 +37,17 @@ public class PlaidController {
 
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
-    private final PlaidPublicTokenRepository plaidPublicTokenRepository;
     private final UserService userService;
     private final PlaidTokenEncryption tokenEncryption;
 
     public PlaidController(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
-            PlaidPublicTokenRepository plaidPublicTokenRepository,
             UserService userService,
             PlaidTokenEncryption tokenEncryption
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
-        this.plaidPublicTokenRepository = plaidPublicTokenRepository;
         this.userService = userService;
         this.tokenEncryption = tokenEncryption;
     }
@@ -76,30 +70,18 @@ public class PlaidController {
         return Map.of("link_token", response.body().getLinkToken());
     }
 
-    @PostMapping("/public-tokens")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void savePublicToken(
+    @PostMapping("/items")
+    public Map<String, String> exchangePublicToken(
             @AuthenticationPrincipal Jwt jwt,
-            @RequestBody SavePublicTokenRequest request
-    ) {
+            @RequestBody ExchangePublicTokenRequest request
+    ) throws IOException {
         if (request.publicToken() == null || request.publicToken().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Public token is required");
         }
 
         User user = userService.getOrCreateUser(jwt);
-        plaidPublicTokenRepository.save(new PlaidPublicToken(user.getId(), request.publicToken()));
-    }
-
-    @PostMapping("/exchange-public-token")
-    public Map<String, String> exchangePublicToken(@AuthenticationPrincipal Jwt jwt) throws IOException {
-        User user = userService.getOrCreateUser(jwt);
-        PlaidPublicToken storedToken = plaidPublicTokenRepository.findById(user.getId())
-                .orElseThrow(() ->
-                        new ResponseStatusException(HttpStatus.NOT_FOUND, "No public token saved")
-                );
-
         ItemPublicTokenExchangeRequest plaidRequest = new ItemPublicTokenExchangeRequest()
-                .publicToken(storedToken.getPublicToken());
+                .publicToken(request.publicToken());
 
         Response<ItemPublicTokenExchangeResponse> response =
                 plaidApi.itemPublicTokenExchange(plaidRequest).execute();
@@ -108,16 +90,16 @@ public class PlaidController {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid token exchange failed");
         }
 
+        // Plaid returns the same item_id when an institution is re-linked, so this upserts.
         ItemPublicTokenExchangeResponse exchange = response.body();
         String encryptedToken = tokenEncryption.encrypt(
                 exchange.getAccessToken(), user.getId(), exchange.getItemId());
         plaidItemRepository.save(new PlaidItem(exchange.getItemId(), encryptedToken, user.getId()));
-        plaidPublicTokenRepository.delete(storedToken);
 
         return Map.of("item_id", exchange.getItemId());
     }
 
-    public record SavePublicTokenRequest(String publicToken) {
+    public record ExchangePublicTokenRequest(String publicToken) {
     }
 
     @GetMapping("/items")

@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { UserButton } from '@clerk/vue'
-import { ArrowRight, Landmark, Plus } from '@lucide/vue'
+import { ArrowRight, Landmark } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Message from 'primevue/message'
-import Select from 'primevue/select'
 import SidebarLayout from 'primevue/sidebarlayout'
 import SidebarMain from 'primevue/sidebarmain'
 import Skeleton from 'primevue/skeleton'
 import AppSidebar from '../components/AppSidebar.vue'
 import {
   createLinkToken,
-  savePublicToken,
   exchangePublicToken,
   getLinkedItemIds,
   getAccounts,
@@ -28,6 +26,7 @@ const balanceError = ref('')
 const itemIds = ref<string[]>([])
 const accounts = ref<PlaidAccount[]>([])
 const selectedAccountId = ref<string>()
+const pendingPublicToken = ref<string>()
 const hasConnections = computed(() => itemIds.value.length > 0)
 const selectedAccount = computed(() =>
   accounts.value.find((account) => account.account_id === selectedAccountId.value),
@@ -40,10 +39,6 @@ onUnmounted(() => {
   disposed = true
   handler?.destroy()
 })
-
-function accountLabel(account: PlaidAccount) {
-  return account.mask ? `${account.name} · ${account.mask}` : account.name
-}
 
 function formatBalance(amount: number | null) {
   if (amount === null) return '—'
@@ -90,10 +85,13 @@ async function loadAccounts() {
 }
 
 async function finishLink(publicToken: string) {
+  linking.value = true
+  linkError.value = ''
+  pendingPublicToken.value = publicToken
   try {
-    await savePublicToken(publicToken)
-    const itemId = await exchangePublicToken()
+    const itemId = await exchangePublicToken(publicToken)
     if (disposed) return
+    pendingPublicToken.value = undefined
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
     await loadAccounts()
   } catch {
@@ -101,6 +99,11 @@ async function finishLink(publicToken: string) {
   } finally {
     if (!disposed) linking.value = false
   }
+}
+
+function retryLink() {
+  if (pendingPublicToken.value) void finishLink(pendingPublicToken.value)
+  else void openPlaidLink()
 }
 
 async function openPlaidLink() {
@@ -236,7 +239,17 @@ async function openPlaidLink() {
             @click="loadAccounts"
           />
         </div>
-        <Message v-if="linkError" severity="error" class="account-notice">{{ linkError }}</Message>
+        <div v-if="linkError" class="account-notice">
+          <Message severity="error">{{ linkError }}</Message>
+          <Button
+            label="Try again"
+            severity="secondary"
+            class="retry-button"
+            :loading="linking"
+            :disabled="linking"
+            @click="retryLink"
+          />
+        </div>
       </main>
     </SidebarMain>
   </SidebarLayout>
@@ -300,19 +313,6 @@ h2 {
 
 .balance-card :deep(.p-card-body) {
   padding: clamp(1.25rem, 3vw, 2rem);
-}
-
-.overview-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  max-width: 100%;
-}
-
-.account-select {
-  width: min(100%, 19rem);
-  font-size: 0.8125rem;
 }
 
 .balance-amount {

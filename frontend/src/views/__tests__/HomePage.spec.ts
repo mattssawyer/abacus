@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
-import Select from 'primevue/select'
 import HomePage from '../HomePage.vue'
 import {
   createLinkToken,
   exchangePublicToken,
   getAccounts,
   getLinkedItemIds,
-  savePublicToken,
   type PlaidAccount,
 } from '../../api/PlaidService'
 
@@ -17,7 +15,6 @@ vi.mock('../../api/PlaidService', () => ({
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   getLinkedItemIds: vi.fn(),
-  savePublicToken: vi.fn(),
 }))
 vi.mock('@clerk/vue', () => ({ UserButton: { template: '<div />' } }))
 enableAutoUnmount(afterEach)
@@ -71,7 +68,6 @@ beforeEach(() => {
   vi.mocked(getLinkedItemIds).mockResolvedValue([])
   vi.mocked(getAccounts).mockResolvedValue([checking])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
-  vi.mocked(savePublicToken).mockResolvedValue()
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
   vi.stubGlobal('Plaid', {
     create: vi.fn((options: typeof linkOptions) => {
@@ -115,8 +111,7 @@ describe('homepage balances', () => {
     linkOptions.onSuccess('public-token', {})
     await flushPromises()
 
-    expect(savePublicToken).toHaveBeenCalledWith('public-token')
-    expect(exchangePublicToken).toHaveBeenCalledOnce()
+    expect(exchangePublicToken).toHaveBeenCalledWith('public-token')
     expect(getAccounts).toHaveBeenCalledWith('saved-item')
     expect(wrapper.text()).not.toContain('Start with an account.')
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
@@ -154,23 +149,24 @@ describe('homepage balances', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
   })
 
-  it('keeps account switching outside the card and always formats balances as dollars', async () => {
-    const credit: PlaidAccount = {
-      ...checking,
-      account_id: 'credit',
-      name: 'Credit card',
-      type: 'credit',
-      balances: { current: 75, available: 925, iso_currency_code: 'EUR', limit: 1000 },
-    }
-    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item', 'another-item'])
-    vi.mocked(getAccounts).mockResolvedValueOnce([checking]).mockResolvedValueOnce([credit])
+  it('retries a failed exchange with the same public token instead of relinking', async () => {
+    vi.mocked(exchangePublicToken).mockRejectedValueOnce(new Error('Plaid unavailable'))
     const wrapper = mountHome()
     await flushPromises()
+    await button(wrapper, 'Add an account').trigger('click')
+    await flushPromises()
+    linkOptions.onSuccess('public-token', {})
+    await flushPromises()
 
-    await wrapper.findComponent(Select).setValue('credit')
+    expect(wrapper.text()).toContain('could not be saved')
 
-    expect(wrapper.get('.balance-card').text()).toBe('$75.00')
-    expect(wrapper.get('.overview-actions').text()).toContain('Credit card')
+    await button(wrapper, 'Try again').trigger('click')
+    await flushPromises()
+
+    expect(exchangePublicToken).toHaveBeenLastCalledWith('public-token')
+    expect(exchangePublicToken).toHaveBeenCalledTimes(2)
+    expect(createLinkToken).toHaveBeenCalledOnce()
+    expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
   })
 
   it('shows an unavailable balance instead of treating a null balance as zero', async () => {
