@@ -6,10 +6,13 @@ import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
+import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
+import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
+import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
 import okhttp3.MediaType;
 import okhttp3.ResponseBody;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -27,6 +31,8 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,7 +59,13 @@ class PlaidControllerTests {
     private PlaidItemRepository plaidItemRepository;
 
     @Mock
+    private PlaidTransactionRepository transactionRepository;
+
+    @Mock
     private UserService userService;
+
+    @Mock
+    private PlaidTransactionSyncService transactionSyncService;
 
     @Mock
     private Call<ItemPublicTokenExchangeResponse> exchangeCall;
@@ -72,8 +84,10 @@ class PlaidControllerTests {
         controller = new PlaidController(
                 plaidApi,
                 plaidItemRepository,
+                transactionRepository,
                 userService,
-                tokenEncryption
+                tokenEncryption,
+                transactionSyncService
         );
         jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
@@ -94,7 +108,7 @@ class PlaidControllerTests {
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        verifyNoInteractions(userService, plaidApi, plaidItemRepository);
+        verifyNoInteractions(userService, plaidApi, plaidItemRepository, transactionSyncService);
     }
 
     @Test
@@ -108,6 +122,7 @@ class PlaidControllerTests {
         when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
                 .thenReturn(exchangeCall);
         when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
+        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.empty());
 
         Map<String, String> result = controller.exchangePublicToken(
                 jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
@@ -125,6 +140,56 @@ class PlaidControllerTests {
         assertNotEquals("access-token", encrypted);
         assertEquals("access-token", tokenEncryption.decrypt(encrypted, USER_ID, "item-id"));
         assertEquals(USER_ID, itemCaptor.getValue().getUserId());
+        verify(transactionSyncService).syncItem(itemCaptor.getValue());
+    }
+
+    @Test
+    void keepsExistingCursorWhenItemIsRelinked() throws IOException {
+        PlaidItem existingItem = new PlaidItem("item-id", "old-encrypted-token", USER_ID);
+        existingItem.updateTransactionsCursor("stored-cursor");
+        ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
+                .itemId("item-id")
+                .accessToken("new-access-token")
+                .requestId("request-id");
+
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
+                .thenReturn(exchangeCall);
+        when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
+        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID))
+                .thenReturn(Optional.of(existingItem));
+
+        controller.exchangePublicToken(
+                jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
+
+        ArgumentCaptor<PlaidItem> itemCaptor = ArgumentCaptor.forClass(PlaidItem.class);
+        verify(plaidItemRepository).save(itemCaptor.capture());
+
+        assertEquals("stored-cursor", itemCaptor.getValue().getTransactionsCursor());
+        assertEquals("new-access-token", tokenEncryption.decrypt(
+                itemCaptor.getValue().getEncryptedAccessToken(), USER_ID, "item-id"));
+    }
+
+    @Test
+    void linksItemEvenWhenInitialTransactionSyncFails() throws IOException {
+        ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
+                .itemId("item-id")
+                .accessToken("access-token")
+                .requestId("request-id");
+
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
+                .thenReturn(exchangeCall);
+        when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
+        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.empty());
+        when(transactionSyncService.syncItem(any(PlaidItem.class)))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "boom"));
+
+        Map<String, String> result = controller.exchangePublicToken(
+                jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
+
+        assertEquals(Map.of("item_id", "item-id"), result);
+        verify(plaidItemRepository).save(any(PlaidItem.class));
     }
 
     @Test
@@ -212,5 +277,39 @@ class PlaidControllerTests {
 
         assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
         verifyNoInteractions(plaidApi);
+    }
+
+    @Test
+    void returnsRecentTransactionsForCurrentUser() {
+        PlaidTransaction stored = new PlaidTransaction(
+                "txn-1", "item-id", USER_ID, "account-1",
+                new BigDecimal("12.34"), LocalDate.of(2026, 9, 1))
+                .merchantName("Coffee Shop")
+                .name("COFFEE SHOP")
+                .isoCurrencyCode("USD")
+                .personalFinanceCategory("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE");
+
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.findAllByUserIdOrderByTransactionDateDescTransactionIdAsc(
+                USER_ID, Pageable.ofSize(5))).thenReturn(List.of(stored));
+
+        List<PlaidController.TransactionResponse> result =
+                controller.getTransactions(jwt, 5).get("transactions");
+
+        assertEquals(1, result.size());
+        assertEquals("txn-1", result.get(0).transactionId());
+        assertEquals("Coffee Shop", result.get(0).merchantName());
+        assertEquals(LocalDate.of(2026, 9, 1), result.get(0).date());
+        assertEquals("FOOD_AND_DRINK", result.get(0).category());
+        verifyNoInteractions(plaidApi);
+    }
+
+    @Test
+    void rejectsOutOfRangeTransactionLimit() {
+        ResponseStatusException exception = assertThrows(
+                ResponseStatusException.class, () -> controller.getTransactions(jwt, 101));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
+        verifyNoInteractions(userService, transactionRepository, plaidApi);
     }
 }

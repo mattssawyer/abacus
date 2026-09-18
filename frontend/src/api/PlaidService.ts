@@ -16,6 +16,20 @@ export interface PlaidAccount {
   type: string
 }
 
+export interface PlaidTransaction {
+  transaction_id: string
+  account_id: string
+  /** Plaid convention: positive when money leaves the account. */
+  amount: number
+  iso_currency_code: string | null
+  date: string
+  name: string | null
+  merchant_name: string | null
+  logo_url: string | null
+  pending: boolean
+  category: string | null
+}
+
 interface AccountsResponse {
   accounts: PlaidAccount[]
 }
@@ -41,4 +55,15 @@ export async function getAccounts(itemId: string): Promise<PlaidAccount[]> {
   )
 
   return data.accounts
+}
+
+export async function getTransactions(limit = 25): Promise<PlaidTransaction[]> {
+  const { data } = await apiClient.get<{ transactions: PlaidTransaction[] }>(
+    '/plaid/transactions',
+    {
+      params: { limit },
+    },
+  )
+
+  return data.transactions
 }

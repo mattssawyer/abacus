@@ -21,6 +21,9 @@ public class PlaidItem {
     @Column(name = "user_id", nullable = false, updatable = false)
     private UUID userId;
 
+    @Column(name = "transactions_cursor", columnDefinition = "TEXT")
+    private String transactionsCursor;
+
     protected PlaidItem() {
     }
 
@@ -40,5 +43,17 @@ public class PlaidItem {
 
     public UUID getUserId() {
         return userId;
+    }
+
+    public String getTransactionsCursor() {
+        return transactionsCursor;
+    }
+
+    public void updateAccessToken(String encryptedAccessToken) {
+        this.encryptedAccessToken = encryptedAccessToken;
+    }
+
+    public void updateTransactionsCursor(String transactionsCursor) {
+        this.transactionsCursor = transactionsCursor;
     }
 }

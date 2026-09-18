@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { computed } from 'vue'
 import PrimeVue from 'primevue/config'
 import HomePage from '../HomePage.vue'
 import {
@@ -7,7 +8,9 @@ import {
   exchangePublicToken,
   getAccounts,
   getLinkedItemIds,
+  getTransactions,
   type PlaidAccount,
+  type PlaidTransaction,
 } from '../../api/PlaidService'
 
 vi.mock('../../api/PlaidService', () => ({
@@ -15,8 +18,18 @@ vi.mock('../../api/PlaidService', () => ({
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   getLinkedItemIds: vi.fn(),
+  getTransactions: vi.fn(),
 }))
-vi.mock('@clerk/vue', () => ({ UserButton: { template: '<div />' } }))
+const clerk = vi.hoisted(() => ({
+  user: null as {
+    firstName?: string | null
+    primaryEmailAddress?: { emailAddress: string } | null
+  } | null,
+}))
+vi.mock('@clerk/vue', () => ({
+  UserButton: { template: '<div />' },
+  useUser: () => ({ user: computed(() => clerk.user) }),
+}))
 enableAutoUnmount(afterEach)
 
 const checking: PlaidAccount = {
@@ -27,6 +40,19 @@ const checking: PlaidAccount = {
   official_name: null,
   subtype: 'checking',
   type: 'depository',
+}
+
+const coffee: PlaidTransaction = {
+  transaction_id: 'txn-1',
+  account_id: 'checking',
+  amount: 4.75,
+  iso_currency_code: 'USD',
+  date: '2026-09-17',
+  name: 'COFFEE SHOP',
+  merchant_name: 'Coffee Shop',
+  logo_url: null,
+  pending: false,
+  category: 'FOOD_AND_DRINK',
 }
 
 let linkOptions: Parameters<Window['Plaid']['create']>[0]
@@ -52,6 +78,7 @@ function button(wrapper: VueWrapper, label: string) {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  clerk.user = { firstName: 'Ada' }
   vi.stubGlobal(
     'matchMedia',
     vi.fn((query: string) => ({
@@ -67,6 +94,7 @@ beforeEach(() => {
   )
   vi.mocked(getLinkedItemIds).mockResolvedValue([])
   vi.mocked(getAccounts).mockResolvedValue([checking])
+  vi.mocked(getTransactions).mockResolvedValue([coffee])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
   vi.stubGlobal('Plaid', {
@@ -98,7 +126,7 @@ describe('homepage balances', () => {
 
     expect(getAccounts).toHaveBeenCalledWith('saved-item')
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
-    expect(wrapper.get('.balance-card').text()).toBe('$1,250.50')
+    expect(wrapper.get('.balance-card').text()).toBe('Balance$1,250.50')
     expect(wrapper.text()).not.toContain('Start with an account.')
   })
 
@@ -180,5 +208,74 @@ describe('homepage balances', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('—')
     expect(wrapper.get('.balance-amount').attributes('aria-label')).toBe('Balance unavailable')
     expect(wrapper.text()).not.toContain('$0.00')
+  })
+})
+
+describe('homepage greeting', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('greets the signed-in user for the current time of day', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 18, 9, 0))
+    const morning = mountHome()
+    await flushPromises()
+    expect(morning.get('h2').text()).toBe('Good morning, Ada')
+
+    vi.setSystemTime(new Date(2026, 8, 18, 20, 0))
+    const evening = mountHome()
+    await flushPromises()
+    expect(evening.get('h2').text()).toBe('Good evening, Ada')
+  })
+
+  it('drops the name rather than guessing when Clerk has no first name', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 18, 9, 0))
+    clerk.user = { firstName: null, primaryEmailAddress: { emailAddress: 'a.b@example.com' } }
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('h2').text()).toBe('Good morning')
+  })
+
+  it('greets without a name while Clerk is still loading', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 18, 14, 0))
+    clerk.user = null
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('h2').text()).toBe('Good afternoon')
+  })
+})
+
+describe('homepage recent transactions', () => {
+  it('lists recent transactions with money leaving the account as negative', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(getTransactions).toHaveBeenCalledWith(5)
+    expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
+    expect(wrapper.get('.transaction-amount').text()).toBe('-$4.75')
+    expect(wrapper.get('.transaction-meta').text()).toContain('Sep 17')
+  })
+
+  it('shows a refund as a positive amount', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getTransactions).mockResolvedValue([{ ...coffee, amount: -4.75 }])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.transaction-amount').text()).toBe('+$4.75')
+  })
+
+  it('keeps balances visible when transactions fail to load', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getTransactions).mockRejectedValueOnce(new Error('Server unavailable'))
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
+    expect(wrapper.text()).toContain('We couldn’t load your recent transactions.')
   })
 })
