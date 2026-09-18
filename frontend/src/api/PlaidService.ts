@@ -30,6 +30,19 @@ export interface PlaidTransaction {
   category: string | null
 }
 
+export interface CategorySpend {
+  /** Plaid primary personal finance category, or UNCATEGORIZED. */
+  category: string
+  amount: number
+}
+
+export interface SpendingByCategory {
+  start: string
+  end: string
+  total: number
+  categories: CategorySpend[]
+}
+
 interface AccountsResponse {
   accounts: PlaidAccount[]
 }
@@ -55,6 +68,11 @@ export async function getAccounts(itemId: string): Promise<PlaidAccount[]> {
   )
 
   return data.accounts
+}
+
+export async function getSpendingByCategory(): Promise<SpendingByCategory> {
+  const { data } = await apiClient.get<SpendingByCategory>('/plaid/spending/by-category')
+  return data
 }
 
 export async function getTransactions(limit = 25): Promise<PlaidTransaction[]> {

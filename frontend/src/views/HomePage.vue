@@ -2,8 +2,10 @@
 import { UserButton, useUser } from '@clerk/vue'
 import { ArrowRight, Landmark } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { ChartOptions } from 'chart.js'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
+import Chart from 'primevue/chart'
 import Message from 'primevue/message'
 import SidebarLayout from 'primevue/sidebarlayout'
 import SidebarMain from 'primevue/sidebarmain'
@@ -14,24 +16,62 @@ import {
   exchangePublicToken,
   getLinkedItemIds,
   getAccounts,
+  getSpendingByCategory,
   getTransactions,
   type PlaidAccount,
   type PlaidTransaction,
+  type SpendingByCategory,
 } from '../api/PlaidService'
 
 const RECENT_TRANSACTION_COUNT = 5
+
+// Plaid's primary personal finance categories, minus the income and transfer ones the
+// server filters out as non-spending.
+const CATEGORY_LABELS: Record<string, string> = {
+  BANK_FEES: 'Bank fees',
+  ENTERTAINMENT: 'Entertainment',
+  FOOD_AND_DRINK: 'Food & drink',
+  GENERAL_MERCHANDISE: 'Shopping',
+  GENERAL_SERVICES: 'Services',
+  GOVERNMENT_AND_NON_PROFIT: 'Government & charity',
+  HOME_IMPROVEMENT: 'Home improvement',
+  LOAN_PAYMENTS: 'Loan payments',
+  MEDICAL: 'Medical',
+  PERSONAL_CARE: 'Personal care',
+  RENT_AND_UTILITIES: 'Rent & utilities',
+  TRANSPORTATION: 'Transportation',
+  TRAVEL: 'Travel',
+  UNCATEGORIZED: 'Uncategorized',
+}
+
+const CATEGORY_COLORS = [
+  '#343434',
+  '#a8705a',
+  '#7d8471',
+  '#c99a5b',
+  '#6b7f95',
+  '#9a6b7d',
+  '#5f7470',
+  '#c2b280',
+  '#857f9e',
+  '#8a837c',
+  '#bcb5ad',
+]
 
 const linking = ref(false)
 const linkError = ref('')
 const initialLoading = ref(true)
 const loadingAccounts = ref(false)
 const loadingTransactions = ref(false)
+const loadingSpending = ref(false)
 const connectionError = ref('')
 const balanceError = ref('')
 const transactionsError = ref('')
+const spendingError = ref('')
 const itemIds = ref<string[]>([])
 const accounts = ref<PlaidAccount[]>([])
 const transactions = ref<PlaidTransaction[]>([])
+const spending = ref<SpendingByCategory>()
 const selectedAccountId = ref<string>()
 const pendingPublicToken = ref<string>()
 const { user } = useUser()
@@ -45,6 +85,39 @@ const greeting = computed(() => {
 const selectedAccount = computed(() =>
   accounts.value.find((account) => account.account_id === selectedAccountId.value),
 )
+const spendingCategories = computed(() => spending.value?.categories ?? [])
+const spendingMonth = computed(() =>
+  spending.value
+    ? new Intl.DateTimeFormat('en-US', { month: 'long' }).format(
+        new Date(`${spending.value.start}T00:00:00`),
+      )
+    : '',
+)
+const spendingChartData = computed(() => ({
+  labels: spendingCategories.value.map((entry) => categoryLabel(entry.category)),
+  datasets: [
+    {
+      data: spendingCategories.value.map((entry) => entry.amount),
+      backgroundColor: spendingCategories.value.map(
+        (_, index) => CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+      ),
+      borderColor: '#ffffff',
+      borderWidth: 2,
+    },
+  ],
+}))
+const spendingChartOptions: ChartOptions<'pie'> = {
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      position: 'bottom',
+      labels: { usePointStyle: true, boxWidth: 8, padding: 12, color: '#716b64' },
+    },
+    tooltip: {
+      callbacks: { label: (context) => ` ${context.label}: ${formatBalance(context.parsed)}` },
+    },
+  },
+}
 let handler: ReturnType<Window['Plaid']['create']> | undefined
 let disposed = false
 
@@ -79,6 +152,18 @@ function transactionLabel(transaction: PlaidTransaction) {
   return transaction.merchant_name ?? transaction.name ?? 'Transaction'
 }
 
+// Plaid can add primary categories, so fall back to a readable form of whatever it sends.
+function categoryLabel(category: string) {
+  return (
+    CATEGORY_LABELS[category] ??
+    category
+      .toLowerCase()
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+  )
+}
+
 async function loadConnections() {
   initialLoading.value = true
   connectionError.value = ''
@@ -86,7 +171,7 @@ async function loadConnections() {
     const savedItemIds = await getLinkedItemIds()
     if (disposed) return
     itemIds.value = savedItemIds
-    await Promise.all([loadAccounts(), loadTransactions()])
+    await Promise.all([loadAccounts(), loadTransactions(), loadSpending()])
   } catch {
     if (!disposed)
       connectionError.value = 'We couldn’t load your connected accounts. Please try again.'
@@ -118,6 +203,20 @@ async function loadAccounts() {
   }
 }
 
+async function loadSpending() {
+  if (!itemIds.value.length) return
+  loadingSpending.value = true
+  spendingError.value = ''
+  try {
+    const summary = await getSpendingByCategory()
+    if (!disposed) spending.value = summary
+  } catch {
+    if (!disposed) spendingError.value = 'We couldn’t load your spending breakdown.'
+  } finally {
+    if (!disposed) loadingSpending.value = false
+  }
+}
+
 async function loadTransactions() {
   if (!itemIds.value.length) return
   loadingTransactions.value = true
@@ -141,7 +240,7 @@ async function finishLink(publicToken: string) {
     if (disposed) return
     pendingPublicToken.value = undefined
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
-    await Promise.all([loadAccounts(), loadTransactions()])
+    await Promise.all([loadAccounts(), loadTransactions(), loadSpending()])
   } catch {
     if (!disposed) linkError.value = 'Your account connection could not be saved. Please try again.'
   } finally {
@@ -225,33 +324,168 @@ async function openPlaidLink() {
           />
         </div>
 
-        <Card
-          v-else-if="hasConnections"
-          class="balance-card"
-          role="region"
-          aria-labelledby="balance-heading"
-          :aria-busy="loadingAccounts"
-        >
-          <template #title>
-            <h3 id="balance-heading" class="card-label">Balance</h3>
-          </template>
-          <template #content>
-            <div v-if="loadingAccounts" role="status" aria-label="Loading balances">
-              <Skeleton width="min(100%, 20rem)" height="5rem" />
-            </div>
-            <p
-              v-else
-              class="balance-amount"
-              aria-live="polite"
-              aria-atomic="true"
-              :aria-label="
-                selectedAccount?.balances.current == null ? 'Balance unavailable' : undefined
-              "
+        <div v-else-if="hasConnections" class="dashboard-grid">
+          <div class="dashboard-main">
+            <Card
+              class="balance-card"
+              role="region"
+              aria-labelledby="balance-heading"
+              :aria-busy="loadingAccounts"
             >
-              {{ formatBalance(selectedAccount?.balances.current ?? null) }}
-            </p>
-          </template>
-        </Card>
+              <template #title>
+                <h3 id="balance-heading" class="card-label">Balance</h3>
+              </template>
+              <template #content>
+                <div v-if="loadingAccounts" role="status" aria-label="Loading balances">
+                  <Skeleton width="min(100%, 20rem)" height="5rem" />
+                </div>
+                <p
+                  v-else
+                  class="balance-amount"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  :aria-label="
+                    selectedAccount?.balances.current == null ? 'Balance unavailable' : undefined
+                  "
+                >
+                  {{ formatBalance(selectedAccount?.balances.current ?? null) }}
+                </p>
+              </template>
+            </Card>
+
+            <div
+              v-if="!loadingAccounts && (balanceError || !accounts.length)"
+              class="account-notice"
+            >
+              <Message :severity="balanceError ? 'error' : 'secondary'">
+                {{ balanceError || 'Balance unavailable.' }}
+              </Message>
+              <Button
+                label="Try again"
+                severity="secondary"
+                class="retry-button"
+                @click="loadAccounts"
+              />
+            </div>
+
+            <Card
+              class="transactions-card"
+              role="region"
+              aria-labelledby="recent-transactions-heading"
+              :aria-busy="loadingTransactions"
+            >
+              <template #title>
+                <h3 id="recent-transactions-heading" class="card-label">Recent transactions</h3>
+              </template>
+              <template #content>
+                <div
+                  v-if="loadingTransactions"
+                  class="transactions-loading"
+                  role="status"
+                  aria-label="Loading recent transactions"
+                >
+                  <Skeleton v-for="row in RECENT_TRANSACTION_COUNT" :key="row" height="2.5rem" />
+                </div>
+
+                <div v-else-if="transactionsError" class="account-notice">
+                  <Message severity="error">{{ transactionsError }}</Message>
+                  <Button
+                    label="Try again"
+                    severity="secondary"
+                    class="retry-button"
+                    @click="loadTransactions"
+                  />
+                </div>
+
+                <p v-else-if="!transactions.length" class="transactions-empty">
+                  No transactions yet. They’ll appear here once your bank sends them.
+                </p>
+
+                <ul v-else class="transactions-list">
+                  <li
+                    v-for="transaction in transactions"
+                    :key="transaction.transaction_id"
+                    class="transaction-row"
+                  >
+                    <img
+                      v-if="transaction.logo_url"
+                      class="transaction-logo"
+                      :src="transaction.logo_url"
+                      alt=""
+                    />
+                    <span
+                      v-else
+                      class="transaction-logo transaction-logo-fallback"
+                      aria-hidden="true"
+                    >
+                      {{ transactionLabel(transaction).charAt(0) }}
+                    </span>
+                    <span class="transaction-details">
+                      <span class="transaction-name">{{ transactionLabel(transaction) }}</span>
+                      <span class="transaction-meta">
+                        {{ formatTransactionDate(transaction.date) }}
+                        <template v-if="transaction.pending"> · Pending</template>
+                      </span>
+                    </span>
+                    <span
+                      class="transaction-amount"
+                      :class="{ 'transaction-amount-inflow': transaction.amount < 0 }"
+                    >
+                      {{ formatTransactionAmount(transaction) }}
+                    </span>
+                  </li>
+                </ul>
+              </template>
+            </Card>
+          </div>
+
+          <Card
+            class="spending-card"
+            role="region"
+            aria-labelledby="spending-heading"
+            :aria-busy="loadingSpending"
+          >
+            <template #title>
+              <h3 id="spending-heading" class="card-label">
+                Spending by category<template v-if="spendingMonth"> · {{ spendingMonth }}</template>
+              </h3>
+            </template>
+            <template #content>
+              <div
+                v-if="loadingSpending"
+                class="spending-chart"
+                role="status"
+                aria-label="Loading your spending breakdown"
+              >
+                <Skeleton width="100%" height="100%" />
+              </div>
+
+              <div v-else-if="spendingError" class="account-notice">
+                <Message severity="error">{{ spendingError }}</Message>
+                <Button
+                  label="Try again"
+                  severity="secondary"
+                  class="retry-button"
+                  @click="loadSpending"
+                />
+              </div>
+
+              <p v-else-if="!spendingCategories.length" class="spending-empty">
+                No spending recorded this month yet.
+              </p>
+
+              <div v-else class="spending-chart">
+                <Chart
+                  type="pie"
+                  :data="spendingChartData"
+                  :options="spendingChartOptions"
+                  class="spending-chart-canvas"
+                  :aria-label="`Spending by category for ${spendingMonth}`"
+                />
+              </div>
+            </template>
+          </Card>
+        </div>
 
         <section v-else class="account-prompt" aria-labelledby="account-prompt-heading">
           <div class="account-prompt-content">
@@ -274,92 +508,6 @@ async function openPlaidLink() {
             <span class="connection-note">Connect through Plaid</span>
           </div>
         </section>
-        <div
-          v-if="
-            hasConnections &&
-            !initialLoading &&
-            !loadingAccounts &&
-            (balanceError || !accounts.length)
-          "
-          class="account-notice"
-        >
-          <Message :severity="balanceError ? 'error' : 'secondary'">
-            {{ balanceError || 'Balance unavailable.' }}
-          </Message>
-          <Button
-            label="Try again"
-            severity="secondary"
-            class="retry-button"
-            @click="loadAccounts"
-          />
-        </div>
-
-        <Card
-          v-if="hasConnections && !initialLoading && !connectionError"
-          class="transactions-card"
-          role="region"
-          aria-labelledby="recent-transactions-heading"
-          :aria-busy="loadingTransactions"
-        >
-          <template #title>
-            <h3 id="recent-transactions-heading" class="card-label">Recent transactions</h3>
-          </template>
-          <template #content>
-            <div
-              v-if="loadingTransactions"
-              class="transactions-loading"
-              role="status"
-              aria-label="Loading recent transactions"
-            >
-              <Skeleton v-for="row in RECENT_TRANSACTION_COUNT" :key="row" height="2.5rem" />
-            </div>
-
-            <div v-else-if="transactionsError" class="account-notice">
-              <Message severity="error">{{ transactionsError }}</Message>
-              <Button
-                label="Try again"
-                severity="secondary"
-                class="retry-button"
-                @click="loadTransactions"
-              />
-            </div>
-
-            <p v-else-if="!transactions.length" class="transactions-empty">
-              No transactions yet. They’ll appear here once your bank sends them.
-            </p>
-
-            <ul v-else class="transactions-list">
-              <li
-                v-for="transaction in transactions"
-                :key="transaction.transaction_id"
-                class="transaction-row"
-              >
-                <img
-                  v-if="transaction.logo_url"
-                  class="transaction-logo"
-                  :src="transaction.logo_url"
-                  alt=""
-                />
-                <span v-else class="transaction-logo transaction-logo-fallback" aria-hidden="true">
-                  {{ transactionLabel(transaction).charAt(0) }}
-                </span>
-                <span class="transaction-details">
-                  <span class="transaction-name">{{ transactionLabel(transaction) }}</span>
-                  <span class="transaction-meta">
-                    {{ formatTransactionDate(transaction.date) }}
-                    <template v-if="transaction.pending"> · Pending</template>
-                  </span>
-                </span>
-                <span
-                  class="transaction-amount"
-                  :class="{ 'transaction-amount-inflow': transaction.amount < 0 }"
-                >
-                  {{ formatTransactionAmount(transaction) }}
-                </span>
-              </li>
-            </ul>
-          </template>
-        </Card>
         <div v-if="linkError" class="account-notice">
           <Message severity="error">{{ linkError }}</Message>
           <Button
@@ -398,7 +546,7 @@ h1 {
 }
 
 .page-content {
-  max-width: 68rem;
+  max-width: 80rem;
   padding: clamp(1.25rem, 4vw, 3rem);
 }
 
@@ -423,8 +571,27 @@ h2 {
   color: var(--app-muted);
 }
 
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.9fr);
+  align-items: stretch;
+  gap: 1rem;
+}
+
+.dashboard-main {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.dashboard-main > .account-notice {
+  margin-top: 0;
+}
+
 .balance-card,
 .transactions-card,
+.spending-card,
 .account-prompt {
   background: var(--app-surface);
   border: 1px solid var(--app-border);
@@ -436,12 +603,50 @@ h2 {
   padding: clamp(1.75rem, 4vw, 2.75rem);
 }
 
-.transactions-card :deep(.p-card-body) {
+.transactions-card :deep(.p-card-body),
+.spending-card :deep(.p-card-body) {
   padding: clamp(1.25rem, 3vw, 2rem);
 }
 
-.transactions-card {
-  margin-top: 1rem;
+.spending-card {
+  min-width: 0;
+}
+
+.spending-card :deep(.p-card-body) {
+  height: 100%;
+}
+
+.spending-card :deep(.p-card-content) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.spending-chart {
+  flex: 1;
+  min-height: 18rem;
+}
+
+.spending-chart-canvas {
+  height: 100%;
+}
+
+.spending-empty {
+  color: var(--app-muted);
+  line-height: 1.65;
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .spending-chart {
+    min-height: 20rem;
+  }
 }
 
 .card-label {

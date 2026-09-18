@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -203,6 +204,44 @@ class PlaidTransactionSyncServiceTests {
         assertEquals(HttpStatus.BAD_GATEWAY, exception.getStatusCode());
         assertNull(item.getTransactionsCursor());
         verifyNoMoreInteractions(transactionRepository);
+    }
+
+    @Test
+    void asyncSyncStoresTransactionsForTheStoredItem() throws IOException {
+        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
+        stubSync(new TransactionsSyncResponse()
+                .added(List.of(new Transaction()
+                        .transactionId("txn-1")
+                        .accountId("account-1")
+                        .amount(1.0)
+                        .date(LocalDate.of(2026, 9, 1))))
+                .nextCursor("cursor-1")
+                .hasMore(false));
+
+        service.syncItemAsync("item-id");
+
+        assertEquals("txn-1", captureSavedTransactions().get(0).getTransactionId());
+        assertEquals("cursor-1", item.getTransactionsCursor());
+    }
+
+    @Test
+    void asyncSyncSwallowsFailuresSoPlaidIsNotRetriedForever() throws IOException {
+        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
+        when(plaidApi.transactionsSync(any(TransactionsSyncRequest.class))).thenReturn(syncCall);
+        when(syncCall.execute()).thenThrow(new IOException("Plaid unreachable"));
+
+        service.syncItemAsync("item-id");
+
+        verify(transactionRepository, org.mockito.Mockito.never()).saveAll(any());
+    }
+
+    @Test
+    void asyncSyncIgnoresItemsThatAreNoLongerStored() {
+        when(plaidItemRepository.findById("missing-item")).thenReturn(Optional.empty());
+
+        service.syncItemAsync("missing-item");
+
+        verifyNoMoreInteractions(plaidApi);
     }
 
     @Test

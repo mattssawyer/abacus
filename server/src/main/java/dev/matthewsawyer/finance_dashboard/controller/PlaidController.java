@@ -21,6 +21,7 @@ import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -38,8 +39,10 @@ import retrofit2.Response;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/plaid")
@@ -49,12 +52,17 @@ public class PlaidController {
 
     private static final int MAX_TRANSACTION_LIMIT = 100;
 
+    // Plaid files paychecks and account transfers under the same category field as spending.
+    private static final Set<String> NON_SPENDING_CATEGORIES =
+            Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT");
+
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
     private final PlaidTransactionRepository transactionRepository;
     private final UserService userService;
     private final PlaidTokenEncryption tokenEncryption;
     private final PlaidTransactionSyncService transactionSyncService;
+    private final String webhookUrl;
 
     public PlaidController(
             PlaidApi plaidApi,
@@ -62,7 +70,8 @@ public class PlaidController {
             PlaidTransactionRepository transactionRepository,
             UserService userService,
             PlaidTokenEncryption tokenEncryption,
-            PlaidTransactionSyncService transactionSyncService
+            PlaidTransactionSyncService transactionSyncService,
+            @Value("${plaid.webhook.url:}") String webhookUrl
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
@@ -70,6 +79,7 @@ public class PlaidController {
         this.userService = userService;
         this.tokenEncryption = tokenEncryption;
         this.transactionSyncService = transactionSyncService;
+        this.webhookUrl = webhookUrl;
     }
 
     @PostMapping("/create-link-token")
@@ -81,6 +91,12 @@ public class PlaidController {
                 .products(List.of(Products.TRANSACTIONS))
                 .countryCodes(List.of(CountryCode.US))
                 .language("en");
+
+        // Items linked without a URL never receive webhooks, so local runs without a tunnel
+        // simply fall back to syncing at link time.
+        if (!webhookUrl.isBlank()) {
+            request.webhook(webhookUrl);
+        }
 
         Response<LinkTokenCreateResponse> response = plaidApi.linkTokenCreate(request).execute();
         if (!response.isSuccessful() || response.body() == null) {
@@ -198,6 +214,42 @@ public class PlaidController {
                     transaction.getPersonalFinanceCategoryPrimary()
             );
         }
+    }
+
+    @GetMapping("/spending/by-category")
+    public SpendingByCategoryResponse getSpendingByCategory(@AuthenticationPrincipal Jwt jwt) {
+        User user = userService.getOrCreateUser(jwt);
+        LocalDate start = LocalDate.now().withDayOfMonth(1);
+        LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
+
+        List<CategorySpend> categories = transactionRepository
+                .sumSpendingByCategory(user.getId(), start, end, NON_SPENDING_CATEGORIES)
+                .stream()
+                // Refunds can net a category to zero or below, which a pie chart cannot show.
+                .filter(total -> total.getTotal() != null && total.getTotal().signum() > 0)
+                .map(total -> new CategorySpend(total.getCategory(), total.getTotal()))
+                .sorted(Comparator.comparing(CategorySpend::amount).reversed())
+                .toList();
+
+        BigDecimal total = categories.stream()
+                .map(CategorySpend::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        return new SpendingByCategoryResponse(start, end, total, categories);
+    }
+
+    public record SpendingByCategoryResponse(
+            @JsonProperty("start") LocalDate start,
+            @JsonProperty("end") LocalDate end,
+            @JsonProperty("total") BigDecimal total,
+            @JsonProperty("categories") List<CategorySpend> categories
+    ) {
+    }
+
+    public record CategorySpend(
+            @JsonProperty("category") String category,
+            @JsonProperty("amount") BigDecimal amount
+    ) {
     }
 
     @GetMapping("/items/{itemId}/accounts")

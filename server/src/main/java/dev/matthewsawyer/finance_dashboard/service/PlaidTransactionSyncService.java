@@ -10,7 +10,10 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -19,11 +22,15 @@ import retrofit2.Response;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 @Service
 public class PlaidTransactionSyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(PlaidTransactionSyncService.class);
 
     private static final int PAGE_SIZE = 500;
 
@@ -35,6 +42,7 @@ public class PlaidTransactionSyncService {
     private final PlaidTransactionRepository transactionRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
+    private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
 
     public PlaidTransactionSyncService(
             PlaidApi plaidApi,
@@ -48,6 +56,27 @@ public class PlaidTransactionSyncService {
         this.transactionRepository = transactionRepository;
         this.tokenEncryption = tokenEncryption;
         this.transactionTemplate = transactionTemplate;
+    }
+
+    /**
+     * Syncs off the request thread so webhook responses stay fast. Runs one sync at a time per
+     * item, since concurrent syncs would race each other's cursor.
+     */
+    @Async("plaidSyncExecutor")
+    public void syncItemAsync(String itemId) {
+        synchronized (itemLocks.computeIfAbsent(itemId, key -> new Object())) {
+            try {
+                PlaidItem item = plaidItemRepository.findById(itemId).orElse(null);
+                if (item == null) {
+                    log.warn("Skipping transactions sync for unknown item {}", itemId);
+                    return;
+                }
+                log.info("Synced {} transaction changes for item {}", syncItem(item), itemId);
+            } catch (IOException | RuntimeException e) {
+                // Plaid re-notifies on the next update, so a failure here is recoverable.
+                log.warn("Transactions sync failed for item {}", itemId, e);
+            }
+        }
     }
 
     /**

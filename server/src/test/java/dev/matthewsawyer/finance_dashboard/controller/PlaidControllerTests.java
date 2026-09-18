@@ -4,6 +4,8 @@ import com.plaid.client.model.AccountsGetRequest;
 import com.plaid.client.model.AccountsGetResponse;
 import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
+import com.plaid.client.model.LinkTokenCreateRequest;
+import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
@@ -33,16 +35,21 @@ import retrofit2.Response;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -51,6 +58,7 @@ import static org.mockito.Mockito.when;
 class PlaidControllerTests {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final String WEBHOOK_URL = "https://abacus.test/api/plaid/webhook";
 
     @Mock
     private PlaidApi plaidApi;
@@ -66,6 +74,9 @@ class PlaidControllerTests {
 
     @Mock
     private PlaidTransactionSyncService transactionSyncService;
+
+    @Mock
+    private Call<LinkTokenCreateResponse> linkTokenCall;
 
     @Mock
     private Call<ItemPublicTokenExchangeResponse> exchangeCall;
@@ -87,7 +98,8 @@ class PlaidControllerTests {
                 transactionRepository,
                 userService,
                 tokenEncryption,
-                transactionSyncService
+                transactionSyncService,
+                WEBHOOK_URL
         );
         jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
@@ -95,6 +107,45 @@ class PlaidControllerTests {
                 .build();
         user = new User("clerk-user");
         ReflectionTestUtils.setField(user, "id", USER_ID);
+    }
+
+    @Test
+    void pointsLinkTokensAtTheWebhookUrl() throws IOException {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidApi.linkTokenCreate(any(LinkTokenCreateRequest.class))).thenReturn(linkTokenCall);
+        when(linkTokenCall.execute()).thenReturn(
+                Response.success(new LinkTokenCreateResponse().linkToken("link-token")));
+
+        assertEquals(Map.of("link_token", "link-token"), controller.createLinkToken(jwt));
+
+        ArgumentCaptor<LinkTokenCreateRequest> requestCaptor =
+                ArgumentCaptor.forClass(LinkTokenCreateRequest.class);
+        verify(plaidApi).linkTokenCreate(requestCaptor.capture());
+        assertEquals(WEBHOOK_URL, requestCaptor.getValue().getWebhook());
+    }
+
+    @Test
+    void omitsTheWebhookUrlWhenItIsNotConfigured() throws IOException {
+        PlaidController unconfigured = new PlaidController(
+                plaidApi,
+                plaidItemRepository,
+                transactionRepository,
+                userService,
+                tokenEncryption,
+                transactionSyncService,
+                ""
+        );
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidApi.linkTokenCreate(any(LinkTokenCreateRequest.class))).thenReturn(linkTokenCall);
+        when(linkTokenCall.execute()).thenReturn(
+                Response.success(new LinkTokenCreateResponse().linkToken("link-token")));
+
+        unconfigured.createLinkToken(jwt);
+
+        ArgumentCaptor<LinkTokenCreateRequest> requestCaptor =
+                ArgumentCaptor.forClass(LinkTokenCreateRequest.class);
+        verify(plaidApi).linkTokenCreate(requestCaptor.capture());
+        assertNull(requestCaptor.getValue().getWebhook());
     }
 
     @Test
@@ -302,6 +353,76 @@ class PlaidControllerTests {
         assertEquals(LocalDate.of(2026, 9, 1), result.get(0).date());
         assertEquals("FOOD_AND_DRINK", result.get(0).category());
         verifyNoInteractions(plaidApi);
+    }
+
+    @Test
+    void totalsSpendingByCategoryForTheCurrentMonth() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+                .thenReturn(List.of(
+                        categoryTotal("FOOD_AND_DRINK", "82.50"),
+                        categoryTotal("RENT_AND_UTILITIES", "1450.00"),
+                        categoryTotal("UNCATEGORIZED", "12.00")));
+
+        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt);
+
+        LocalDate expectedStart = LocalDate.now().withDayOfMonth(1);
+        assertEquals(expectedStart, result.start());
+        assertEquals(expectedStart.withDayOfMonth(expectedStart.lengthOfMonth()), result.end());
+        assertEquals(new BigDecimal("1544.50"), result.total());
+        assertEquals(
+                List.of("RENT_AND_UTILITIES", "FOOD_AND_DRINK", "UNCATEGORIZED"),
+                result.categories().stream().map(PlaidController.CategorySpend::category).toList());
+    }
+
+    @Test
+    void leavesIncomeAndTransfersOutOfTheSpendingQuery() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+                .thenReturn(List.of());
+
+        controller.getSpendingByCategory(jwt);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<String>> excludedCaptor = ArgumentCaptor.forClass(Collection.class);
+        verify(transactionRepository).sumSpendingByCategory(
+                eq(USER_ID), any(), any(), excludedCaptor.capture());
+
+        assertEquals(
+                Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT"),
+                Set.copyOf(excludedCaptor.getValue()));
+    }
+
+    @Test
+    void dropsCategoriesRefundedBackToZero() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+                .thenReturn(List.of(
+                        categoryTotal("GENERAL_MERCHANDISE", "-25.00"),
+                        categoryTotal("MEDICAL", "0.00"),
+                        categoryTotal("TRAVEL", "300.00")));
+
+        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt);
+
+        assertEquals(
+                List.of("TRAVEL"),
+                result.categories().stream().map(PlaidController.CategorySpend::category).toList());
+        assertEquals(new BigDecimal("300.00"), result.total());
+    }
+
+    private static PlaidTransactionRepository.CategoryTotal categoryTotal(String category, String total) {
+        return new PlaidTransactionRepository.CategoryTotal() {
+
+            @Override
+            public String getCategory() {
+                return category;
+            }
+
+            @Override
+            public BigDecimal getTotal() {
+                return new BigDecimal(total);
+            }
+        };
     }
 
     @Test

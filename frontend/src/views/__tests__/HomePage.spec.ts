@@ -8,9 +8,11 @@ import {
   exchangePublicToken,
   getAccounts,
   getLinkedItemIds,
+  getSpendingByCategory,
   getTransactions,
   type PlaidAccount,
   type PlaidTransaction,
+  type SpendingByCategory,
 } from '../../api/PlaidService'
 
 vi.mock('../../api/PlaidService', () => ({
@@ -18,6 +20,7 @@ vi.mock('../../api/PlaidService', () => ({
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   getLinkedItemIds: vi.fn(),
+  getSpendingByCategory: vi.fn(),
   getTransactions: vi.fn(),
 }))
 const clerk = vi.hoisted(() => ({
@@ -55,6 +58,17 @@ const coffee: PlaidTransaction = {
   category: 'FOOD_AND_DRINK',
 }
 
+const spending: SpendingByCategory = {
+  start: '2026-09-01',
+  end: '2026-09-30',
+  total: 1544.5,
+  categories: [
+    { category: 'RENT_AND_UTILITIES', amount: 1450 },
+    { category: 'FOOD_AND_DRINK', amount: 82.5 },
+    { category: 'UNCATEGORIZED', amount: 12 },
+  ],
+}
+
 let linkOptions: Parameters<Window['Plaid']['create']>[0]
 
 function mountHome() {
@@ -65,6 +79,15 @@ function mountHome() {
         AppSidebar: true,
         SidebarLayout: { template: '<div><slot /></div>' },
         SidebarMain: { template: '<div><slot /></div>' },
+        // Chart.js needs a real canvas, so assert on the data the chart is handed instead.
+        Chart: {
+          props: ['data'],
+          template: `<ul class="chart-stub">
+            <li v-for="(label, index) in data.labels" :key="label">
+              {{ label }}: {{ data.datasets[0].data[index] }}
+            </li>
+          </ul>`,
+        },
       },
     },
   })
@@ -95,6 +118,7 @@ beforeEach(() => {
   vi.mocked(getLinkedItemIds).mockResolvedValue([])
   vi.mocked(getAccounts).mockResolvedValue([checking])
   vi.mocked(getTransactions).mockResolvedValue([coffee])
+  vi.mocked(getSpendingByCategory).mockResolvedValue(spending)
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
   vi.stubGlobal('Plaid', {
@@ -277,5 +301,51 @@ describe('homepage recent transactions', () => {
 
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.text()).toContain('We couldn’t load your recent transactions.')
+  })
+})
+
+describe('homepage spending breakdown', () => {
+  it('charts each category with a readable label', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const slices = wrapper.findAll('.chart-stub li').map((slice) => slice.text())
+    expect(slices).toEqual(['Rent & utilities: 1450', 'Food & drink: 82.5', 'Uncategorized: 12'])
+    expect(wrapper.get('#spending-heading').text()).toContain('September')
+  })
+
+  it('labels categories Plaid adds later without a hardcoded name', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingByCategory).mockResolvedValue({
+      ...spending,
+      total: 40,
+      categories: [{ category: 'DIGITAL_ASSETS', amount: 40 }],
+    })
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.chart-stub li').text()).toBe('Digital Assets: 40')
+  })
+
+  it('shows an empty state instead of a blank chart', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingByCategory).mockResolvedValue({ ...spending, total: 0, categories: [] })
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No spending recorded this month yet.')
+    expect(wrapper.find('.chart-stub').exists()).toBe(false)
+  })
+
+  it('keeps the rest of the dashboard working when the breakdown fails', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingByCategory).mockRejectedValueOnce(new Error('Server unavailable'))
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
+    expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
+    expect(wrapper.text()).toContain('We couldn’t load your spending breakdown.')
   })
 })
