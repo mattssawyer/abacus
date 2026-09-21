@@ -14,6 +14,8 @@ p {
 
 :root {
   color-scheme: light;
+  /* 15px on phones, ~16px on laptops, 20px on large desktops. */
+  font-size: clamp(15px, 0.7vw + 6.5px, 20px);
   font-family:
     'Geist Variable',
     system-ui,

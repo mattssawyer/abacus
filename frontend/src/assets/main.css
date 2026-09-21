@@ -30,9 +30,9 @@
   --app-shadow-border: var(--app-shadow-xs), 0 0 0 1px var(--app-ring);
   --app-shadow-border-sm: var(--app-shadow-sm), 0 0 0 1px var(--app-ring);
 
-  --app-radius-container: 12px;
-  --app-radius-control: 10px;
-  --app-radius-chip: 8px;
+  --app-radius-container: 0.75rem;
+  --app-radius-control: 0.625rem;
+  --app-radius-chip: 0.5rem;
 
   --app-rail-width: 5.25rem;
   --app-tabbar-height: 4rem;

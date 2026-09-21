@@ -624,7 +624,7 @@ async function openPlaidLink() {
 .app-shell {
   display: flex;
   align-items: stretch;
-  min-height: 100svh;
+  height: 100svh;
 }
 
 .home-page {
@@ -632,11 +632,17 @@ async function openPlaidLink() {
   flex: 1;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 
 .page-content {
-  width: min(100%, 72rem);
-  padding: 2rem clamp(1.25rem, 4vw, 2.5rem) 3rem;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  padding: 1.75rem 2rem 2rem;
 }
 
 .overview-heading {
@@ -645,11 +651,11 @@ async function openPlaidLink() {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 1rem;
-  margin-bottom: 1.75rem;
+  margin-bottom: 1.5rem;
 }
 
 h1 {
-  font-size: clamp(1.5rem, 3vw, 1.875rem);
+  font-size: 1.75rem;
   font-weight: 550;
   line-height: 1.2;
   letter-spacing: -0.04em;
@@ -675,16 +681,19 @@ h1 {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 0.85fr);
-  align-items: start;
+  flex: 1;
+  grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
+  align-items: stretch;
   gap: 1rem;
+  min-height: 0;
 }
 
 .dashboard-main {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
   min-width: 0;
+  min-height: 0;
 }
 
 .dashboard-main > .account-notice {
@@ -699,7 +708,15 @@ h1 {
 }
 
 .balance-card {
+  flex: none;
   padding: 1.5rem 1.75rem 1.75rem;
+}
+
+.transactions-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .spending-card {
@@ -707,13 +724,15 @@ h1 {
   flex-direction: column;
   gap: 0.25rem;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
+  container-type: inline-size;
 }
 
 .spending-body {
   display: flex;
   flex: 1;
   flex-direction: column;
+  justify-content: center;
   gap: 1.25rem;
   min-height: 0;
 }
@@ -721,12 +740,14 @@ h1 {
 .spending-chart {
   position: relative;
   flex: none;
-  width: min(100%, 16.5rem);
-  height: 16.5rem;
+  width: min(20rem, 72cqi, 100%);
+  aspect-ratio: 1;
+  height: auto;
   margin: 0.5rem auto 0;
 }
 
 .spending-chart-canvas {
+  width: 100%;
   height: 100%;
 }
 
@@ -845,8 +866,11 @@ h1 {
 
 .transactions-list {
   display: grid;
+  flex: 1;
+  align-content: start;
   margin: 0.5rem 0 0;
   padding: 0;
+  overflow: auto;
   list-style: none;
 }
 
@@ -924,7 +948,7 @@ h1 {
 .balance-amount {
   overflow-wrap: anywhere;
   color: var(--app-text);
-  font-size: clamp(2.5rem, 6vw, 3.75rem);
+  font-size: 3.25rem;
   font-weight: 550;
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
@@ -943,7 +967,8 @@ h1 {
 
 .account-prompt {
   display: grid;
-  min-height: 24rem;
+  flex: 1;
+  min-height: 20rem;
   place-items: center;
   padding: 3rem 1.5rem;
 }
@@ -989,8 +1014,20 @@ h1 {
 }
 
 @media (max-width: 900px) {
+  .app-shell {
+    height: auto;
+    min-height: 100svh;
+  }
+
   .dashboard-grid {
     grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .transactions-card,
+  .spending-card,
+  .account-prompt {
+    flex: none;
   }
 
   .page-content {
@@ -999,6 +1036,14 @@ h1 {
 
   .overview-heading {
     margin-bottom: 1.25rem;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  .balance-amount {
+    font-size: 2.5rem;
   }
 }
 
@@ -1011,11 +1056,10 @@ h1 {
 
   .spending-chart {
     width: min(100%, 14.5rem);
-    height: 14.5rem;
   }
 
   .account-prompt {
-    min-height: 20rem;
+    min-height: 18rem;
     padding: 2rem 1rem;
   }
 }

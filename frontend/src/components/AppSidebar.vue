@@ -56,7 +56,9 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 
 .rail-brand img {
   display: block;
-  border-radius: 9px;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5625rem;
 }
 
 .rail-items {
@@ -97,6 +99,11 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
   place-items: center;
   border-radius: var(--app-radius-chip);
   transition: background-color 120ms ease;
+}
+
+.rail-icon :deep(svg) {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 .rail-item:hover .rail-icon {

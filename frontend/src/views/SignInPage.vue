@@ -62,7 +62,9 @@ const logoUrl = `${import.meta.env.BASE_URL}logo.svg`
 
 .sign-in-logo {
   display: block;
-  border-radius: 9px;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5625rem;
 }
 
 .sign-in-brand span {
