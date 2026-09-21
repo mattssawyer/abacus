@@ -24,6 +24,7 @@ import {
 } from '../api/PlaidService'
 
 const RECENT_TRANSACTION_COUNT = 5
+const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
 
 // Plaid's primary personal finance categories, minus the income and transfer ones the
 // server filters out as non-spending.
@@ -76,6 +77,7 @@ const selectedAccountId = ref<string>()
 const pendingPublicToken = ref<string>()
 const { user } = useUser()
 const hasConnections = computed(() => itemIds.value.length > 0)
+const hasMultipleAccounts = computed(() => accounts.value.length > 1)
 const greeting = computed(() => {
   const hour = new Date().getHours()
   const timeOfDay = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'
@@ -148,6 +150,10 @@ function formatTransactionDate(date: string) {
   )
 }
 
+function accountLabel(account: PlaidAccount) {
+  return account.mask ? `${account.name} ••${account.mask}` : account.name
+}
+
 function transactionLabel(transaction: PlaidTransaction) {
   return transaction.merchant_name ?? transaction.name ?? 'Transaction'
 }
@@ -171,7 +177,9 @@ async function loadConnections() {
     const savedItemIds = await getLinkedItemIds()
     if (disposed) return
     itemIds.value = savedItemIds
-    await Promise.all([loadAccounts(), loadTransactions(), loadSpending()])
+    await loadAccounts()
+    if (disposed) return
+    await Promise.all([loadTransactions(), loadSpending()])
   } catch {
     if (!disposed)
       connectionError.value = 'We couldn’t load your connected accounts. Please try again.'
@@ -185,22 +193,44 @@ async function loadAccounts() {
   loadingAccounts.value = true
   balanceError.value = ''
   try {
-    const results = await Promise.allSettled(itemIds.value.map((itemId) => getAccounts(itemId)))
-    if (disposed) return
-    accounts.value = results.flatMap((result) =>
-      result.status === 'fulfilled' ? result.value : [],
-    )
-    if (results.some((result) => result.status === 'rejected')) {
-      balanceError.value = 'Some account balances couldn’t be loaded. Please try again.'
-    }
-    if (!selectedAccount.value) {
-      selectedAccountId.value = (
-        accounts.value.find((account) => account.type === 'depository') ?? accounts.value[0]
-      )?.account_id
-    }
+    accounts.value = await getAccounts()
+    if (!disposed) chooseAccount()
+  } catch {
+    if (!disposed) balanceError.value = 'We couldn’t load your accounts. Please try again.'
   } finally {
     if (!disposed) loadingAccounts.value = false
   }
+}
+
+function chooseAccount() {
+  const stillValid = (accountId: string | undefined) =>
+    Boolean(accountId && accounts.value.some((account) => account.account_id === accountId))
+
+  if (stillValid(selectedAccountId.value)) {
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value as string)
+    return
+  }
+
+  const remembered = localStorage.getItem(ACCOUNT_STORAGE_KEY) ?? undefined
+  selectedAccountId.value = stillValid(remembered)
+    ? remembered
+    : (accounts.value.find((account) => account.type === 'depository') ?? accounts.value[0])
+        ?.account_id
+
+  if (selectedAccountId.value) {
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value)
+  }
+}
+
+function onAccountChange(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLSelectElement)) return
+  const accountId = target.value
+  if (!accountId || accountId === selectedAccountId.value) return
+  if (!accounts.value.some((account) => account.account_id === accountId)) return
+  selectedAccountId.value = accountId
+  localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId)
+  void Promise.all([loadTransactions(), loadSpending()])
 }
 
 async function loadSpending() {
@@ -208,7 +238,7 @@ async function loadSpending() {
   loadingSpending.value = true
   spendingError.value = ''
   try {
-    const summary = await getSpendingByCategory()
+    const summary = await getSpendingByCategory(selectedAccountId.value)
     if (!disposed) spending.value = summary
   } catch {
     if (!disposed) spendingError.value = 'We couldn’t load your spending breakdown.'
@@ -222,7 +252,7 @@ async function loadTransactions() {
   loadingTransactions.value = true
   transactionsError.value = ''
   try {
-    const recent = await getTransactions(RECENT_TRANSACTION_COUNT)
+    const recent = await getTransactions(RECENT_TRANSACTION_COUNT, selectedAccountId.value)
     if (!disposed) transactions.value = recent
   } catch {
     if (!disposed) transactionsError.value = 'We couldn’t load your recent transactions.'
@@ -240,7 +270,9 @@ async function finishLink(publicToken: string) {
     if (disposed) return
     pendingPublicToken.value = undefined
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
-    await Promise.all([loadAccounts(), loadTransactions(), loadSpending()])
+    await loadAccounts()
+    if (disposed) return
+    await Promise.all([loadTransactions(), loadSpending()])
   } catch {
     if (!disposed) linkError.value = 'Your account connection could not be saved. Please try again.'
   } finally {
@@ -333,7 +365,25 @@ async function openPlaidLink() {
               :aria-busy="loadingAccounts"
             >
               <template #title>
-                <h3 id="balance-heading" class="card-label">Balance</h3>
+                <div class="balance-heading">
+                  <h3 id="balance-heading" class="card-label">Balance</h3>
+                  <select
+                    v-if="hasMultipleAccounts"
+                    class="account-select"
+                    aria-label="Account"
+                    :value="selectedAccountId"
+                    :disabled="loadingAccounts"
+                    @change="onAccountChange($event)"
+                  >
+                    <option
+                      v-for="account in accounts"
+                      :key="account.account_id"
+                      :value="account.account_id"
+                    >
+                      {{ accountLabel(account) }}
+                    </option>
+                  </select>
+                </div>
               </template>
               <template #content>
                 <div v-if="loadingAccounts" role="status" aria-label="Loading balances">
@@ -654,6 +704,25 @@ h2 {
   font-size: 0.8125rem;
   font-weight: 500;
   letter-spacing: -0.005em;
+}
+
+.balance-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.account-select {
+  min-width: 11rem;
+  max-width: 16rem;
+  padding: 0.35rem 0.6rem;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.8125rem;
 }
 
 .transactions-loading {

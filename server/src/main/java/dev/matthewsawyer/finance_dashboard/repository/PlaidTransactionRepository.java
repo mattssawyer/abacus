@@ -14,8 +14,16 @@ import java.util.UUID;
 
 public interface PlaidTransactionRepository extends JpaRepository<PlaidTransaction, String> {
 
-    List<PlaidTransaction> findAllByUserIdOrderByTransactionDateDescTransactionIdAsc(
-            UUID userId, Pageable pageable);
+    @Query("""
+            SELECT t FROM PlaidTransaction t
+            WHERE t.userId = :userId
+              AND (:accountId IS NULL OR t.accountId = :accountId)
+            ORDER BY t.transactionDate DESC, t.transactionId ASC
+            """)
+    List<PlaidTransaction> findRecent(
+            @Param("userId") UUID userId,
+            @Param("accountId") String accountId,
+            Pageable pageable);
 
     void deleteAllByItemIdAndTransactionIdIn(String itemId, Collection<String> transactionIds);
 
@@ -29,6 +37,7 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
             FROM PlaidTransaction t
             WHERE t.userId = :userId
               AND t.transactionDate BETWEEN :start AND :end
+              AND (:accountId IS NULL OR t.accountId = :accountId)
               AND (t.personalFinanceCategoryPrimary IS NULL
                    OR t.personalFinanceCategoryPrimary NOT IN :excludedCategories)
             GROUP BY COALESCE(t.personalFinanceCategoryPrimary, 'UNCATEGORIZED')
@@ -37,6 +46,7 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
             @Param("userId") UUID userId,
             @Param("start") LocalDate start,
             @Param("end") LocalDate end,
+            @Param("accountId") String accountId,
             @Param("excludedCategories") Collection<String> excludedCategories);
 
     interface CategoryTotal {

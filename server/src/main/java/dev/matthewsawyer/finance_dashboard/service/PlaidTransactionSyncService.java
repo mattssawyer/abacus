@@ -1,13 +1,17 @@
 package dev.matthewsawyer.finance_dashboard.service;
 
+import com.plaid.client.model.AccountBalance;
+import com.plaid.client.model.AccountBase;
 import com.plaid.client.model.RemovedTransaction;
 import com.plaid.client.model.Transaction;
 import com.plaid.client.model.TransactionsSyncRequest;
 import com.plaid.client.model.TransactionsSyncRequestOptions;
 import com.plaid.client.model.TransactionsSyncResponse;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
+import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import org.slf4j.Logger;
@@ -39,6 +43,7 @@ public class PlaidTransactionSyncService {
 
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
+    private final PlaidAccountRepository accountRepository;
     private final PlaidTransactionRepository transactionRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
@@ -47,12 +52,14 @@ public class PlaidTransactionSyncService {
     public PlaidTransactionSyncService(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
+            PlaidAccountRepository accountRepository,
             PlaidTransactionRepository transactionRepository,
             PlaidTokenEncryption tokenEncryption,
             TransactionTemplate transactionTemplate
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
+        this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.tokenEncryption = tokenEncryption;
         this.transactionTemplate = transactionTemplate;
@@ -71,7 +78,7 @@ public class PlaidTransactionSyncService {
                     log.warn("Skipping transactions sync for unknown item {}", itemId);
                     return;
                 }
-                log.info("Synced {} transaction changes for item {}", syncItem(item), itemId);
+                syncItem(item);
             } catch (IOException | RuntimeException e) {
                 // Plaid re-notifies on the next update, so a failure here is recoverable.
                 log.warn("Transactions sync failed for item {}", itemId, e);
@@ -84,22 +91,39 @@ public class PlaidTransactionSyncService {
      * Returns the number of transactions added, modified or removed.
      */
     public int syncItem(PlaidItem item) throws IOException {
-        String accessToken = tokenEncryption.decrypt(
-                item.getEncryptedAccessToken(), item.getUserId(), item.getItemId());
+        String itemId = item.getItemId();
+        log.info("Starting transactions sync for item {}", itemId);
 
-        int changed = 0;
+        String accessToken = tokenEncryption.decrypt(
+                item.getEncryptedAccessToken(), item.getUserId(), itemId);
+
+        int added = 0;
+        int modified = 0;
+        int removed = 0;
+        int pages = 0;
         for (int page = 0; page < MAX_PAGES; page++) {
-            TransactionsSyncResponse body = fetchPage(accessToken, item.getTransactionsCursor());
-            changed += applyPage(item, body);
+            TransactionsSyncResponse body = fetchPage(itemId, accessToken, item.getTransactionsCursor());
+            PageCounts counts = applyPage(item, body);
+            added += counts.added();
+            modified += counts.modified();
+            removed += counts.removed();
+            pages++;
+            log.debug(
+                    "Applied transactions sync page {} for item {}: {} added, {} modified, {} removed",
+                    pages, itemId, counts.added(), counts.modified(), counts.removed());
             if (!Boolean.TRUE.equals(body.getHasMore())) {
-                return changed;
+                log.info(
+                        "Finished transactions sync for item {}: {} added, {} modified, {} removed ({} pages)",
+                        itemId, added, modified, removed, pages);
+                return added + modified + removed;
             }
         }
 
         throw new IllegalStateException("Plaid transactions sync exceeded " + MAX_PAGES + " pages");
     }
 
-    private TransactionsSyncResponse fetchPage(String accessToken, String cursor) throws IOException {
+    private TransactionsSyncResponse fetchPage(String itemId, String accessToken, String cursor)
+            throws IOException {
         TransactionsSyncRequest request = new TransactionsSyncRequest()
                 .accessToken(accessToken)
                 .cursor(cursor)
@@ -108,6 +132,7 @@ public class PlaidTransactionSyncService {
 
         Response<TransactionsSyncResponse> response = plaidApi.transactionsSync(request).execute();
         if (!response.isSuccessful() || response.body() == null) {
+            log.warn("Plaid transactions sync failed for item {} with HTTP {}", itemId, response.code());
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid transactions sync failed");
         }
 
@@ -118,12 +143,14 @@ public class PlaidTransactionSyncService {
      * Persists one page and its cursor together, so a later page failing cannot skip
      * transactions we never stored.
      */
-    private int applyPage(PlaidItem item, TransactionsSyncResponse page) {
+    private PageCounts applyPage(PlaidItem item, TransactionsSyncResponse page) {
         List<Transaction> added = Objects.requireNonNullElse(page.getAdded(), List.of());
         List<Transaction> modified = Objects.requireNonNullElse(page.getModified(), List.of());
         List<RemovedTransaction> removed = Objects.requireNonNullElse(page.getRemoved(), List.of());
 
         transactionTemplate.executeWithoutResult(status -> {
+            upsertAccounts(item, page.getAccounts());
+
             List<PlaidTransaction> upserts = Stream.concat(added.stream(), modified.stream())
                     .map(transaction -> toEntity(transaction, item))
                     .toList();
@@ -142,7 +169,40 @@ public class PlaidTransactionSyncService {
             plaidItemRepository.save(item);
         });
 
-        return added.size() + modified.size() + removed.size();
+        return new PageCounts(added.size(), modified.size(), removed.size());
+    }
+
+    private record PageCounts(int added, int modified, int removed) {
+    }
+
+    public void upsertAccounts(PlaidItem item, List<AccountBase> plaidAccounts) {
+        if (plaidAccounts == null || plaidAccounts.isEmpty()) {
+            return;
+        }
+
+        for (AccountBase plaidAccount : plaidAccounts) {
+            PlaidAccount account = accountRepository.findById(plaidAccount.getAccountId())
+                    .orElseGet(() -> new PlaidAccount(
+                            plaidAccount.getAccountId(), item.getItemId(), item.getUserId()));
+            AccountBalance balances = plaidAccount.getBalances();
+            account.updateSnapshot(
+                    Objects.requireNonNullElse(plaidAccount.getName(), "Account"),
+                    plaidAccount.getOfficialName(),
+                    plaidAccount.getMask(),
+                    plaidAccount.getType() == null ? "other" : plaidAccount.getType().getValue(),
+                    plaidAccount.getSubtype() == null ? null : plaidAccount.getSubtype().getValue(),
+                    money(balances == null ? null : balances.getAvailable()),
+                    money(balances == null ? null : balances.getCurrent()),
+                    money(balances == null ? null : balances.getLimit()),
+                    balances == null ? null : balances.getIsoCurrencyCode(),
+                    balances == null ? null : balances.getUnofficialCurrencyCode()
+            );
+            accountRepository.save(account);
+        }
+    }
+
+    private static BigDecimal money(Double amount) {
+        return amount == null ? null : BigDecimal.valueOf(amount);
     }
 
     private static PlaidTransaction toEntity(Transaction transaction, PlaidItem item) {

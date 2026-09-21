@@ -1,15 +1,20 @@
 package dev.matthewsawyer.finance_dashboard.controller;
 
+import com.plaid.client.model.AccountBalance;
+import com.plaid.client.model.AccountBase;
 import com.plaid.client.model.AccountsGetRequest;
 import com.plaid.client.model.AccountsGetResponse;
+import com.plaid.client.model.AccountType;
 import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.model.LinkTokenCreateRequest;
 import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
@@ -43,13 +48,13 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -65,6 +70,9 @@ class PlaidControllerTests {
 
     @Mock
     private PlaidItemRepository plaidItemRepository;
+
+    @Mock
+    private PlaidAccountRepository accountRepository;
 
     @Mock
     private PlaidTransactionRepository transactionRepository;
@@ -95,6 +103,7 @@ class PlaidControllerTests {
         controller = new PlaidController(
                 plaidApi,
                 plaidItemRepository,
+                accountRepository,
                 transactionRepository,
                 userService,
                 tokenEncryption,
@@ -129,6 +138,7 @@ class PlaidControllerTests {
         PlaidController unconfigured = new PlaidController(
                 plaidApi,
                 plaidItemRepository,
+                accountRepository,
                 transactionRepository,
                 userService,
                 tokenEncryption,
@@ -286,47 +296,58 @@ class PlaidControllerTests {
     }
 
     @Test
-    void getsAccountsUsingStoredAccessToken() throws IOException {
-        PlaidItem plaidItem = new PlaidItem("item-id",
-                tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
-        AccountsGetResponse plaidResponse = new AccountsGetResponse();
+    void returnsStoredAccountsWithoutCallingPlaid() throws IOException {
+        PlaidAccount stored = checkingAccount();
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(accountRepository.existsByUserId(USER_ID)).thenReturn(true);
+        when(accountRepository.findAllByUserIdOrderByNameAscAccountIdAsc(USER_ID))
+                .thenReturn(List.of(stored));
+
+        List<PlaidController.AccountResponse> result = controller.getAccounts(jwt).get("accounts");
+
+        assertEquals(1, result.size());
+        assertEquals("checking", result.get(0).accountId());
+        assertEquals("Checking", result.get(0).name());
+        assertEquals(new BigDecimal("1250.50"), result.get(0).balances().current());
+        verifyNoInteractions(plaidApi);
+    }
+
+    @Test
+    void backfillsAccountsFromPlaidWhenNoneAreStored() throws IOException {
+        PlaidItem item = new PlaidItem(
+                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
+        AccountsGetResponse plaidResponse = new AccountsGetResponse()
+                .accounts(List.of(new AccountBase()
+                        .accountId("checking")
+                        .name("Checking")
+                        .type(AccountType.DEPOSITORY)
+                        .balances(new AccountBalance().current(1250.5))));
 
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.of(plaidItem));
+        when(accountRepository.existsByUserId(USER_ID)).thenReturn(false);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
         when(plaidApi.accountsGet(any(AccountsGetRequest.class))).thenReturn(accountsCall);
         when(accountsCall.execute()).thenReturn(Response.success(plaidResponse));
+        when(accountRepository.findAllByUserIdOrderByNameAscAccountIdAsc(USER_ID))
+                .thenReturn(List.of(checkingAccount()));
 
-        AccountsGetResponse result = controller.getAccounts(jwt, "item-id");
+        controller.getAccounts(jwt);
 
         ArgumentCaptor<AccountsGetRequest> requestCaptor =
                 ArgumentCaptor.forClass(AccountsGetRequest.class);
         verify(plaidApi).accountsGet(requestCaptor.capture());
-
-        assertSame(plaidResponse, result);
         assertEquals("access-token", requestCaptor.getValue().getAccessToken());
+        verify(transactionSyncService).upsertAccounts(item, plaidResponse.getAccounts());
     }
 
     @Test
     void refusesPlaintextStoredTokenBeforeCallingPlaid() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID))
-                .thenReturn(Optional.of(new PlaidItem("item-id", "access-token", USER_ID)));
+        when(accountRepository.existsByUserId(USER_ID)).thenReturn(false);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(
+                new PlaidItem("item-id", "access-token", USER_ID)));
 
-        assertThrows(IllegalStateException.class, () -> controller.getAccounts(jwt, "item-id"));
-        verifyNoInteractions(plaidApi);
-    }
-
-    @Test
-    void returnsNotFoundForUnknownItem() {
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findByItemIdAndUserId("missing-item", USER_ID)).thenReturn(Optional.empty());
-
-        ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class,
-                () -> controller.getAccounts(jwt, "missing-item")
-        );
-
-        assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
+        assertThrows(IllegalStateException.class, () -> controller.getAccounts(jwt));
         verifyNoInteractions(plaidApi);
     }
 
@@ -341,11 +362,11 @@ class PlaidControllerTests {
                 .personalFinanceCategory("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE");
 
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.findAllByUserIdOrderByTransactionDateDescTransactionIdAsc(
-                USER_ID, Pageable.ofSize(5))).thenReturn(List.of(stored));
+        when(transactionRepository.findRecent(USER_ID, null, Pageable.ofSize(5)))
+                .thenReturn(List.of(stored));
 
         List<PlaidController.TransactionResponse> result =
-                controller.getTransactions(jwt, 5).get("transactions");
+                controller.getTransactions(jwt, 5, null).get("transactions");
 
         assertEquals(1, result.size());
         assertEquals("txn-1", result.get(0).transactionId());
@@ -358,13 +379,14 @@ class PlaidControllerTests {
     @Test
     void totalsSpendingByCategoryForTheCurrentMonth() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+        when(transactionRepository.sumSpendingByCategory(
+                eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
                         categoryTotal("FOOD_AND_DRINK", "82.50"),
                         categoryTotal("RENT_AND_UTILITIES", "1450.00"),
                         categoryTotal("UNCATEGORIZED", "12.00")));
 
-        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt);
+        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt, null);
 
         LocalDate expectedStart = LocalDate.now().withDayOfMonth(1);
         assertEquals(expectedStart, result.start());
@@ -378,15 +400,16 @@ class PlaidControllerTests {
     @Test
     void leavesIncomeAndTransfersOutOfTheSpendingQuery() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+        when(transactionRepository.sumSpendingByCategory(
+                eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of());
 
-        controller.getSpendingByCategory(jwt);
+        controller.getSpendingByCategory(jwt, null);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<String>> excludedCaptor = ArgumentCaptor.forClass(Collection.class);
         verify(transactionRepository).sumSpendingByCategory(
-                eq(USER_ID), any(), any(), excludedCaptor.capture());
+                eq(USER_ID), any(), any(), isNull(), excludedCaptor.capture());
 
         assertEquals(
                 Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT"),
@@ -396,13 +419,14 @@ class PlaidControllerTests {
     @Test
     void dropsCategoriesRefundedBackToZero() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(eq(USER_ID), any(), any(), anyCollection()))
+        when(transactionRepository.sumSpendingByCategory(
+                eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
                         categoryTotal("GENERAL_MERCHANDISE", "-25.00"),
                         categoryTotal("MEDICAL", "0.00"),
                         categoryTotal("TRAVEL", "300.00")));
 
-        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt);
+        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt, null);
 
         assertEquals(
                 List.of("TRAVEL"),
@@ -428,9 +452,50 @@ class PlaidControllerTests {
     @Test
     void rejectsOutOfRangeTransactionLimit() {
         ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class, () -> controller.getTransactions(jwt, 101));
+                ResponseStatusException.class, () -> controller.getTransactions(jwt, 101, null));
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
         verifyNoInteractions(userService, transactionRepository, plaidApi);
+    }
+
+    @Test
+    void filtersRecentTransactionsToTheRequestedAccount() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.findRecent(USER_ID, "account-1", Pageable.ofSize(5)))
+                .thenReturn(List.of());
+
+        controller.getTransactions(jwt, 5, "account-1");
+
+        verify(transactionRepository).findRecent(USER_ID, "account-1", Pageable.ofSize(5));
+    }
+
+    @Test
+    void filtersSpendingToTheRequestedAccount() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.sumSpendingByCategory(
+                eq(USER_ID), any(), any(), eq("account-1"), anyCollection()))
+                .thenReturn(List.of());
+
+        controller.getSpendingByCategory(jwt, "account-1");
+
+        verify(transactionRepository).sumSpendingByCategory(
+                eq(USER_ID), any(), any(), eq("account-1"), anyCollection());
+    }
+
+    private static PlaidAccount checkingAccount() {
+        PlaidAccount account = new PlaidAccount("checking", "item-id", USER_ID);
+        account.updateSnapshot(
+                "Checking",
+                null,
+                "1234",
+                "depository",
+                "checking",
+                new BigDecimal("1200.00"),
+                new BigDecimal("1250.50"),
+                null,
+                "USD",
+                null
+        );
+        return account;
     }
 }

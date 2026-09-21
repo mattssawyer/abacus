@@ -45,6 +45,16 @@ const checking: PlaidAccount = {
   type: 'depository',
 }
 
+const savings: PlaidAccount = {
+  account_id: 'savings',
+  balances: { current: 8400, available: 8400, iso_currency_code: null, limit: null },
+  mask: '5678',
+  name: 'Savings',
+  official_name: null,
+  subtype: 'savings',
+  type: 'depository',
+}
+
 const coffee: PlaidTransaction = {
   transaction_id: 'txn-1',
   account_id: 'checking',
@@ -101,6 +111,7 @@ function button(wrapper: VueWrapper, label: string) {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  localStorage.clear()
   clerk.user = { firstName: 'Ada' }
   vi.stubGlobal(
     'matchMedia',
@@ -148,7 +159,7 @@ describe('homepage balances', () => {
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(getAccounts).toHaveBeenCalledWith('saved-item')
+    expect(getAccounts).toHaveBeenCalledOnce()
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('.balance-card').text()).toBe('Balance$1,250.50')
     expect(wrapper.text()).not.toContain('Start with an account.')
@@ -164,7 +175,7 @@ describe('homepage balances', () => {
     await flushPromises()
 
     expect(exchangePublicToken).toHaveBeenCalledWith('public-token')
-    expect(getAccounts).toHaveBeenCalledWith('saved-item')
+    expect(getAccounts).toHaveBeenCalledOnce()
     expect(wrapper.text()).not.toContain('Start with an account.')
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
   })
@@ -179,7 +190,7 @@ describe('homepage balances', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('Start with an account.')
-    expect(wrapper.text()).toContain('Some account balances couldn’t be loaded.')
+    expect(wrapper.text()).toContain('We couldn’t load your accounts.')
     expect(wrapper.text()).not.toContain('could not be saved')
     await button(wrapper, 'Try again').trigger('click')
     await flushPromises()
@@ -278,7 +289,7 @@ describe('homepage recent transactions', () => {
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(getTransactions).toHaveBeenCalledWith(5)
+    expect(getTransactions).toHaveBeenCalledWith(5, 'checking')
     expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
     expect(wrapper.get('.transaction-amount').text()).toBe('-$4.75')
     expect(wrapper.get('.transaction-meta').text()).toContain('Sep 17')
@@ -347,5 +358,45 @@ describe('homepage spending breakdown', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
     expect(wrapper.text()).toContain('We couldn’t load your spending breakdown.')
+  })
+})
+
+describe('homepage account selector', () => {
+  it('hides the selector when only one account is linked', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.find('[aria-label="Account"]').exists()).toBe(false)
+  })
+
+  it('switches the balance and reloads activity for the selected account', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getAccounts).mockResolvedValue([checking, savings])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
+    expect(wrapper.get('[aria-label="Account"]').text()).toContain('Checking ••1234')
+    expect(getTransactions).toHaveBeenLastCalledWith(5, 'checking')
+    expect(getSpendingByCategory).toHaveBeenLastCalledWith('checking')
+
+    await wrapper.get('[aria-label="Account"]').setValue('savings')
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
+    expect(getTransactions).toHaveBeenLastCalledWith(5, 'savings')
+    expect(getSpendingByCategory).toHaveBeenLastCalledWith('savings')
+  })
+
+  it('restores the last selected account on reload', async () => {
+    localStorage.setItem('abacus.selectedAccountId', 'savings')
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getAccounts).mockResolvedValue([checking, savings])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
+    expect(getTransactions).toHaveBeenCalledWith(5, 'savings')
   })
 })

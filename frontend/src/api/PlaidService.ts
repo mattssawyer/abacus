@@ -62,24 +62,23 @@ export async function getLinkedItemIds(): Promise<string[]> {
   return data.item_ids
 }
 
-export async function getAccounts(itemId: string): Promise<PlaidAccount[]> {
-  const { data } = await apiClient.get<AccountsResponse>(
-    `/plaid/items/${encodeURIComponent(itemId)}/accounts`,
-  )
-
+export async function getAccounts(): Promise<PlaidAccount[]> {
+  const { data } = await apiClient.get<AccountsResponse>('/plaid/accounts')
   return data.accounts
 }
 
-export async function getSpendingByCategory(): Promise<SpendingByCategory> {
-  const { data } = await apiClient.get<SpendingByCategory>('/plaid/spending/by-category')
+export async function getSpendingByCategory(accountId?: string): Promise<SpendingByCategory> {
+  const { data } = await apiClient.get<SpendingByCategory>('/plaid/spending/by-category', {
+    params: accountId ? { account_id: accountId } : undefined,
+  })
   return data
 }
 
-export async function getTransactions(limit = 25): Promise<PlaidTransaction[]> {
+export async function getTransactions(limit = 25, accountId?: string): Promise<PlaidTransaction[]> {
   const { data } = await apiClient.get<{ transactions: PlaidTransaction[] }>(
     '/plaid/transactions',
     {
-      params: { limit },
+      params: { limit, ...(accountId ? { account_id: accountId } : {}) },
     },
   )
 

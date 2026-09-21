@@ -11,9 +11,11 @@ import com.plaid.client.model.LinkTokenCreateRequestUser;
 import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.model.Products;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
@@ -27,7 +29,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -43,6 +44,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/plaid")
@@ -58,6 +60,7 @@ public class PlaidController {
 
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
+    private final PlaidAccountRepository accountRepository;
     private final PlaidTransactionRepository transactionRepository;
     private final UserService userService;
     private final PlaidTokenEncryption tokenEncryption;
@@ -67,6 +70,7 @@ public class PlaidController {
     public PlaidController(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
+            PlaidAccountRepository accountRepository,
             PlaidTransactionRepository transactionRepository,
             UserService userService,
             PlaidTokenEncryption tokenEncryption,
@@ -75,6 +79,7 @@ public class PlaidController {
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
+        this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.userService = userService;
         this.tokenEncryption = tokenEncryption;
@@ -170,7 +175,8 @@ public class PlaidController {
     @GetMapping("/transactions")
     public Map<String, List<TransactionResponse>> getTransactions(
             @AuthenticationPrincipal Jwt jwt,
-            @RequestParam(defaultValue = "25") int limit
+            @RequestParam(defaultValue = "25") int limit,
+            @RequestParam(name = "account_id", required = false) String accountId
     ) {
         if (limit < 1 || limit > MAX_TRANSACTION_LIMIT) {
             throw new ResponseStatusException(
@@ -179,8 +185,7 @@ public class PlaidController {
 
         User user = userService.getOrCreateUser(jwt);
         List<TransactionResponse> transactions = transactionRepository
-                .findAllByUserIdOrderByTransactionDateDescTransactionIdAsc(
-                        user.getId(), Pageable.ofSize(limit))
+                .findRecent(user.getId(), blankToNull(accountId), Pageable.ofSize(limit))
                 .stream()
                 .map(TransactionResponse::from)
                 .toList();
@@ -217,13 +222,17 @@ public class PlaidController {
     }
 
     @GetMapping("/spending/by-category")
-    public SpendingByCategoryResponse getSpendingByCategory(@AuthenticationPrincipal Jwt jwt) {
+    public SpendingByCategoryResponse getSpendingByCategory(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestParam(name = "account_id", required = false) String accountId
+    ) {
         User user = userService.getOrCreateUser(jwt);
         LocalDate start = LocalDate.now().withDayOfMonth(1);
         LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
 
         List<CategorySpend> categories = transactionRepository
-                .sumSpendingByCategory(user.getId(), start, end, NON_SPENDING_CATEGORIES)
+                .sumSpendingByCategory(
+                        user.getId(), start, end, blankToNull(accountId), NON_SPENDING_CATEGORIES)
                 .stream()
                 // Refunds can net a category to zero or below, which a pie chart cannot show.
                 .filter(total -> total.getTotal() != null && total.getTotal().signum() > 0)
@@ -252,26 +261,79 @@ public class PlaidController {
     ) {
     }
 
-    @GetMapping("/items/{itemId}/accounts")
-    public AccountsGetResponse getAccounts(
-            @AuthenticationPrincipal Jwt jwt,
-            @PathVariable String itemId
-    ) throws IOException {
+    @GetMapping("/accounts")
+    public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt)
+            throws IOException {
         User user = userService.getOrCreateUser(jwt);
-        PlaidItem plaidItem = plaidItemRepository.findByItemIdAndUserId(itemId, user.getId())
-                .orElseThrow(() ->
-                        new ResponseStatusException(HttpStatus.NOT_FOUND, "Plaid item not found")
-                );
-
-        AccountsGetRequest request = new AccountsGetRequest()
-                .accessToken(tokenEncryption.decrypt(
-                        plaidItem.getEncryptedAccessToken(), user.getId(), plaidItem.getItemId()));
-
-        Response<AccountsGetResponse> response = plaidApi.accountsGet(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid accounts get failed");
+        if (!accountRepository.existsByUserId(user.getId())) {
+            backfillAccounts(user.getId());
         }
 
-        return response.body();
+        List<AccountResponse> accounts = accountRepository
+                .findAllByUserIdOrderByNameAscAccountIdAsc(user.getId())
+                .stream()
+                .map(AccountResponse::from)
+                .toList();
+
+        return Map.of("accounts", accounts);
+    }
+
+    /**
+     * Items linked before accounts were stored have metadata only in Plaid. Fetch once, then
+     * later loads read Postgres.
+     */
+    private void backfillAccounts(UUID userId) throws IOException {
+        List<PlaidItem> items = plaidItemRepository.findAllByUserIdOrderByItemIdAsc(userId);
+        for (PlaidItem item : items) {
+            AccountsGetRequest request = new AccountsGetRequest()
+                    .accessToken(tokenEncryption.decrypt(
+                            item.getEncryptedAccessToken(), userId, item.getItemId()));
+            Response<AccountsGetResponse> response = plaidApi.accountsGet(request).execute();
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid accounts get failed");
+            }
+            transactionSyncService.upsertAccounts(item, response.body().getAccounts());
+        }
+    }
+
+    public record AccountResponse(
+            @JsonProperty("account_id") String accountId,
+            @JsonProperty("balances") BalanceResponse balances,
+            @JsonProperty("mask") String mask,
+            @JsonProperty("name") String name,
+            @JsonProperty("official_name") String officialName,
+            @JsonProperty("subtype") String subtype,
+            @JsonProperty("type") String type
+    ) {
+        static AccountResponse from(PlaidAccount account) {
+            return new AccountResponse(
+                    account.getAccountId(),
+                    new BalanceResponse(
+                            account.getAvailableBalance(),
+                            account.getCurrentBalance(),
+                            account.getIsoCurrencyCode(),
+                            account.getUnofficialCurrencyCode(),
+                            account.getLimitAmount()
+                    ),
+                    account.getMask(),
+                    account.getName(),
+                    account.getOfficialName(),
+                    account.getSubtype(),
+                    account.getType()
+            );
+        }
+    }
+
+    public record BalanceResponse(
+            @JsonProperty("available") BigDecimal available,
+            @JsonProperty("current") BigDecimal current,
+            @JsonProperty("iso_currency_code") String isoCurrencyCode,
+            @JsonProperty("unofficial_currency_code") String unofficialCurrencyCode,
+            @JsonProperty("limit") BigDecimal limit
+    ) {
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 }

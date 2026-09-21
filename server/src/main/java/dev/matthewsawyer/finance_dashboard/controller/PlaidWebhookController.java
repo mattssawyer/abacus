@@ -62,9 +62,19 @@ public class PlaidWebhookController {
         }
 
         WebhookPayload payload = parse(rawBody);
+        log.info(
+                "Received Plaid webhook {}/{} for item {}",
+                payload.webhookType(),
+                payload.webhookCode(),
+                payload.itemId());
+
         if (!TRANSACTIONS.equals(payload.webhookType())
                 || !SYNC_UPDATES_AVAILABLE.equals(payload.webhookCode())) {
-            log.debug("Ignoring {} webhook {}", payload.webhookType(), payload.webhookCode());
+            log.info(
+                    "Ignoring Plaid webhook {}/{} for item {}",
+                    payload.webhookType(),
+                    payload.webhookCode(),
+                    payload.itemId());
             return;
         }
 
@@ -74,6 +84,7 @@ public class PlaidWebhookController {
             return;
         }
 
+        log.info("Queuing transactions sync for item {}", payload.itemId());
         transactionSyncService.syncItemAsync(payload.itemId());
     }
 
