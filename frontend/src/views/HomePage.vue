@@ -15,12 +15,15 @@ import {
   getAccounts,
   getSpendingByCategory,
   getTransactions,
+  getRecurringTransactions,
   type PlaidAccount,
   type PlaidTransaction,
+  type RecurringStream,
   type SpendingByCategory,
 } from '../api/PlaidService'
 
-const RECENT_TRANSACTION_COUNT = 5
+const RECENT_TRANSACTION_COUNT = 8
+const RECURRING_STREAM_COUNT = 8
 const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
 
 // Plaid's primary personal finance categories, minus the income and transfer ones the
@@ -40,6 +43,15 @@ const CATEGORY_LABELS: Record<string, string> = {
   TRANSPORTATION: 'Transportation',
   TRAVEL: 'Travel',
   UNCATEGORIZED: 'Uncategorized',
+}
+
+const FREQUENCY_LABELS: Record<string, string> = {
+  WEEKLY: 'Weekly',
+  BIWEEKLY: 'Every 2 weeks',
+  SEMI_MONTHLY: 'Twice a month',
+  MONTHLY: 'Monthly',
+  ANNUALLY: 'Yearly',
+  UNKNOWN: 'Recurring',
 }
 
 // Category palette borrowed from Maybe: saturated enough to tell slices apart, muted enough
@@ -63,14 +75,17 @@ const linkError = ref('')
 const initialLoading = ref(true)
 const loadingAccounts = ref(false)
 const loadingTransactions = ref(false)
+const loadingRecurring = ref(false)
 const loadingSpending = ref(false)
 const connectionError = ref('')
 const balanceError = ref('')
 const transactionsError = ref('')
+const recurringError = ref('')
 const spendingError = ref('')
 const itemIds = ref<string[]>([])
 const accounts = ref<PlaidAccount[]>([])
 const transactions = ref<PlaidTransaction[]>([])
+const recurring = ref<RecurringStream[]>([])
 const spending = ref<SpendingByCategory>()
 const selectedAccountId = ref<string>()
 const pendingPublicToken = ref<string>()
@@ -120,9 +135,10 @@ const spendingChartData = computed(() => ({
   ],
 }))
 const spendingChartOptions: ChartOptions<'doughnut'> = {
+  responsive: true,
   maintainAspectRatio: false,
   cutout: '76%',
-  layout: { padding: 2 },
+  layout: { padding: 0 },
   plugins: {
     legend: { display: false },
     tooltip: {
@@ -182,6 +198,36 @@ function transactionLabel(transaction: PlaidTransaction) {
   return transaction.merchant_name ?? transaction.name ?? 'Transaction'
 }
 
+function recurringLabel(stream: RecurringStream) {
+  return stream.merchant_name ?? stream.description ?? 'Recurring'
+}
+
+function frequencyLabel(frequency: string) {
+  return (
+    FREQUENCY_LABELS[frequency] ??
+    frequency
+      .toLowerCase()
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+  )
+}
+
+function recurringMeta(stream: RecurringStream) {
+  const cadence = frequencyLabel(stream.frequency)
+  if (stream.next_date) return `${cadence} · Next ${formatTransactionDate(stream.next_date)}`
+  if (stream.last_date) return `${cadence} · Last ${formatTransactionDate(stream.last_date)}`
+  return cadence
+}
+
+function formatRecurringAmount(stream: RecurringStream) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: stream.iso_currency_code ?? 'USD',
+    signDisplay: 'exceptZero',
+  }).format(-stream.amount)
+}
+
 // Plaid can add primary categories, so fall back to a readable form of whatever it sends.
 function categoryLabel(category: string) {
   return (
@@ -203,7 +249,7 @@ async function loadConnections() {
     itemIds.value = savedItemIds
     await loadAccounts()
     if (disposed) return
-    await Promise.all([loadTransactions(), loadSpending()])
+    await Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
   } catch {
     if (!disposed)
       connectionError.value = 'We couldn’t load your connected accounts. Please try again.'
@@ -254,7 +300,7 @@ function onAccountChange(event: Event) {
   if (!accounts.value.some((account) => account.account_id === accountId)) return
   selectedAccountId.value = accountId
   localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId)
-  void Promise.all([loadTransactions(), loadSpending()])
+  void Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
 }
 
 async function loadSpending() {
@@ -285,6 +331,20 @@ async function loadTransactions() {
   }
 }
 
+async function loadRecurring() {
+  if (!itemIds.value.length) return
+  loadingRecurring.value = true
+  recurringError.value = ''
+  try {
+    const streams = await getRecurringTransactions(selectedAccountId.value)
+    if (!disposed) recurring.value = streams.slice(0, RECURRING_STREAM_COUNT)
+  } catch {
+    if (!disposed) recurringError.value = 'We couldn’t load your recurring transactions.'
+  } finally {
+    if (!disposed) loadingRecurring.value = false
+  }
+}
+
 async function finishLink(publicToken: string) {
   linking.value = true
   linkError.value = ''
@@ -296,7 +356,7 @@ async function finishLink(publicToken: string) {
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
     await loadAccounts()
     if (disposed) return
-    await Promise.all([loadTransactions(), loadSpending()])
+    await Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
   } catch {
     if (!disposed) linkError.value = 'Your account connection could not be saved. Please try again.'
   } finally {
@@ -516,6 +576,55 @@ async function openPlaidLink() {
                 </li>
               </ul>
             </section>
+
+            <section
+              class="panel recurring-card"
+              role="region"
+              aria-labelledby="recurring-heading"
+              :aria-busy="loadingRecurring"
+            >
+              <h2 id="recurring-heading" class="card-label">Recurring</h2>
+              <div
+                v-if="loadingRecurring"
+                class="transactions-loading"
+                role="status"
+                aria-label="Loading recurring transactions"
+              >
+                <Skeleton v-for="row in RECURRING_STREAM_COUNT" :key="row" height="2.75rem" />
+              </div>
+
+              <div v-else-if="recurringError" class="account-notice">
+                <Message severity="error">{{ recurringError }}</Message>
+                <Button
+                  label="Try again"
+                  severity="secondary"
+                  class="retry-button"
+                  @click="loadRecurring"
+                />
+              </div>
+
+              <p v-else-if="!recurring.length" class="transactions-empty">
+                No recurring transactions found yet.
+              </p>
+
+              <ul v-else class="transactions-list">
+                <li v-for="stream in recurring" :key="stream.stream_id" class="transaction-row">
+                  <span class="transaction-logo transaction-logo-fallback" aria-hidden="true">
+                    {{ recurringLabel(stream).charAt(0) }}
+                  </span>
+                  <span class="transaction-details">
+                    <span class="transaction-name">{{ recurringLabel(stream) }}</span>
+                    <span class="transaction-meta">{{ recurringMeta(stream) }}</span>
+                  </span>
+                  <span
+                    class="transaction-amount"
+                    :class="{ 'transaction-amount-inflow': stream.amount < 0 }"
+                  >
+                    {{ formatRecurringAmount(stream) }}
+                  </span>
+                </li>
+              </ul>
+            </section>
           </div>
 
           <section
@@ -642,7 +751,7 @@ async function openPlaidLink() {
   flex-direction: column;
   width: 100%;
   min-height: 0;
-  padding: 1.75rem 2rem 2rem;
+  padding: 1.25rem 1.5rem 1.5rem;
 }
 
 .overview-heading {
@@ -650,12 +759,12 @@ async function openPlaidLink() {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 0.75rem;
+  margin-bottom: 1.125rem;
 }
 
 h1 {
-  font-size: 1.75rem;
+  font-size: 1.5rem;
   font-weight: 550;
   line-height: 1.2;
   letter-spacing: -0.04em;
@@ -702,14 +811,15 @@ h1 {
 
 .balance-card,
 .transactions-card,
+.recurring-card,
 .spending-card,
 .account-prompt {
-  padding: 1.25rem 1.5rem 1.5rem;
+  padding: 1rem 1.25rem 1.125rem;
 }
 
 .balance-card {
   flex: none;
-  padding: 1.5rem 1.75rem 1.75rem;
+  padding: 1.125rem 1.25rem 1.25rem;
 }
 
 .transactions-card {
@@ -740,13 +850,15 @@ h1 {
 .spending-chart {
   position: relative;
   flex: none;
-  width: min(20rem, 72cqi, 100%);
+  width: min(22rem, 85cqi, 100%);
   aspect-ratio: 1;
   height: auto;
   margin: 0.5rem auto 0;
 }
 
-.spending-chart-canvas {
+.spending-chart-canvas,
+.spending-chart-canvas :deep(canvas) {
+  display: block;
   width: 100%;
   height: 100%;
 }
@@ -754,14 +866,17 @@ h1 {
 .spending-total {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-content: center;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
   pointer-events: none;
 }
 
 .spending-total-amount {
-  font-size: 1.25rem;
+  font-size: 1.75rem;
   font-weight: 550;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
@@ -769,7 +884,7 @@ h1 {
 
 .spending-total-label {
   color: var(--app-text-secondary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .spending-legend {
@@ -878,9 +993,9 @@ h1 {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  min-height: 3.25rem;
-  padding: 0.625rem 0;
+  gap: 0.625rem;
+  min-height: 2.5rem;
+  padding: 0.4rem 0;
 }
 
 .transaction-row:not(:last-child)::after {
@@ -888,7 +1003,7 @@ h1 {
   position: absolute;
   right: 0;
   bottom: 0;
-  left: 2.75rem;
+  left: 2.375rem;
   height: 1px;
   background: var(--app-divider);
 }
@@ -896,8 +1011,8 @@ h1 {
 .transaction-logo {
   flex: none;
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 1.75rem;
+  height: 1.75rem;
   place-items: center;
   object-fit: cover;
   background: var(--app-inset);
@@ -948,7 +1063,7 @@ h1 {
 .balance-amount {
   overflow-wrap: anywhere;
   color: var(--app-text);
-  font-size: 3.25rem;
+  font-size: 2.75rem;
   font-weight: 550;
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
@@ -1039,23 +1154,24 @@ h1 {
   }
 
   h1 {
-    font-size: 1.5rem;
+    font-size: 1.375rem;
   }
 
   .balance-amount {
-    font-size: 2.5rem;
+    font-size: 2.25rem;
   }
 }
 
 @media (max-width: 640px) {
   .balance-card,
   .transactions-card,
+  .recurring-card,
   .spending-card {
     padding: 1.125rem 1.125rem 1.25rem;
   }
 
   .spending-chart {
-    width: min(100%, 14.5rem);
+    width: min(100%, 18rem);
   }
 
   .account-prompt {

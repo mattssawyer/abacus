@@ -72,7 +72,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 .rail-item {
   position: relative;
   display: grid;
-  grid-template-columns: 0.25rem 1fr;
+  grid-template-columns: 1fr;
   grid-template-rows: auto auto;
   row-gap: 0.25rem;
   padding: 0 0 0.25rem;
@@ -82,16 +82,16 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 }
 
 .rail-indicator {
-  grid-row: 1;
+  position: absolute;
+  top: 0.5rem;
+  left: 0;
   width: 0.25rem;
   height: 1rem;
-  align-self: center;
   background: transparent;
   border-radius: 0 2px 2px 0;
 }
 
 .rail-icon {
-  grid-row: 1;
   display: grid;
   width: 2rem;
   height: 2rem;
@@ -124,7 +124,6 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 }
 
 .rail-label {
-  grid-column: 2;
   font-size: 0.6875rem;
   font-weight: 500;
   line-height: 1.2;
@@ -171,6 +170,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
   }
 
   .rail-indicator {
+    position: static;
     grid-row: 1;
     grid-column: 1;
     width: 1rem;

@@ -30,6 +30,20 @@ export interface PlaidTransaction {
   category: string | null
 }
 
+export interface RecurringStream {
+  stream_id: string
+  account_id: string
+  merchant_name: string | null
+  description: string | null
+  amount: number
+  iso_currency_code: string | null
+  frequency: string
+  next_date: string | null
+  last_date: string | null
+  is_inflow: boolean
+  category: string | null
+}
+
 export interface CategorySpend {
   /** Plaid primary personal finance category, or UNCATEGORIZED. */
   category: string
@@ -83,4 +97,15 @@ export async function getTransactions(limit = 25, accountId?: string): Promise<P
   )
 
   return data.transactions
+}
+
+export async function getRecurringTransactions(accountId?: string): Promise<RecurringStream[]> {
+  const { data } = await apiClient.get<{ streams: RecurringStream[] }>(
+    '/plaid/transactions/recurring',
+    {
+      params: accountId ? { account_id: accountId } : undefined,
+    },
+  )
+
+  return data.streams
 }

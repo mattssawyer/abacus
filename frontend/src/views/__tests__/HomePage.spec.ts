@@ -10,8 +10,10 @@ import {
   getLinkedItemIds,
   getSpendingByCategory,
   getTransactions,
+  getRecurringTransactions,
   type PlaidAccount,
   type PlaidTransaction,
+  type RecurringStream,
   type SpendingByCategory,
 } from '../../api/PlaidService'
 
@@ -22,6 +24,7 @@ vi.mock('../../api/PlaidService', () => ({
   getLinkedItemIds: vi.fn(),
   getSpendingByCategory: vi.fn(),
   getTransactions: vi.fn(),
+  getRecurringTransactions: vi.fn(),
 }))
 const clerk = vi.hoisted(() => ({
   user: null as {
@@ -79,6 +82,20 @@ const spending: SpendingByCategory = {
   ],
 }
 
+const rent: RecurringStream = {
+  stream_id: 'stream-rent',
+  account_id: 'checking',
+  merchant_name: 'Landlord',
+  description: 'RENT',
+  amount: 1450,
+  iso_currency_code: 'USD',
+  frequency: 'MONTHLY',
+  next_date: '2026-10-01',
+  last_date: '2026-09-01',
+  is_inflow: false,
+  category: 'RENT_AND_UTILITIES',
+}
+
 let linkOptions: Parameters<Window['Plaid']['create']>[0]
 
 function mountHome() {
@@ -128,6 +145,7 @@ beforeEach(() => {
   vi.mocked(getAccounts).mockResolvedValue([checking])
   vi.mocked(getTransactions).mockResolvedValue([coffee])
   vi.mocked(getSpendingByCategory).mockResolvedValue(spending)
+  vi.mocked(getRecurringTransactions).mockResolvedValue([rent])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
   vi.stubGlobal('Plaid', {
@@ -288,7 +306,7 @@ describe('homepage recent transactions', () => {
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(getTransactions).toHaveBeenCalledWith(5, 'checking')
+    expect(getTransactions).toHaveBeenCalledWith(8, 'checking')
     expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
     expect(wrapper.get('.transaction-amount').text()).toBe('-$4.75')
     expect(wrapper.get('.transaction-meta').text()).toContain('Sep 17')
@@ -380,15 +398,17 @@ describe('homepage account selector', () => {
 
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('[aria-label="Account"]').text()).toContain('Checking ••1234')
-    expect(getTransactions).toHaveBeenLastCalledWith(5, 'checking')
+    expect(getTransactions).toHaveBeenLastCalledWith(8, 'checking')
     expect(getSpendingByCategory).toHaveBeenLastCalledWith('checking')
+    expect(getRecurringTransactions).toHaveBeenLastCalledWith('checking')
 
     await wrapper.get('[aria-label="Account"]').setValue('savings')
     await flushPromises()
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
-    expect(getTransactions).toHaveBeenLastCalledWith(5, 'savings')
+    expect(getTransactions).toHaveBeenLastCalledWith(8, 'savings')
     expect(getSpendingByCategory).toHaveBeenLastCalledWith('savings')
+    expect(getRecurringTransactions).toHaveBeenLastCalledWith('savings')
   })
 
   it('restores the last selected account on reload', async () => {
@@ -399,6 +419,55 @@ describe('homepage account selector', () => {
     await flushPromises()
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
-    expect(getTransactions).toHaveBeenCalledWith(5, 'savings')
+    expect(getTransactions).toHaveBeenCalledWith(8, 'savings')
+    expect(getRecurringTransactions).toHaveBeenCalledWith('savings')
+  })
+})
+
+describe('homepage recurring transactions', () => {
+  it('lists upcoming recurring charges with cadence and next date', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(getRecurringTransactions).toHaveBeenCalledWith('checking')
+    expect(wrapper.get('#recurring-heading').text()).toBe('Recurring')
+    expect(wrapper.get('.recurring-card .transaction-name').text()).toBe('Landlord')
+    expect(wrapper.get('.recurring-card .transaction-meta').text()).toBe('Monthly · Next Oct 1')
+    expect(wrapper.get('.recurring-card .transaction-amount').text()).toBe('-$1,450.00')
+  })
+
+  it('shows a paycheck as a positive amount', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValue([
+      { ...rent, stream_id: 'pay', merchant_name: 'Payroll', amount: -2400, is_inflow: true },
+    ])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.recurring-card .transaction-amount').text()).toBe('+$2,400.00')
+    expect(wrapper.get('.recurring-card .transaction-amount').classes()).toContain(
+      'transaction-amount-inflow',
+    )
+  })
+
+  it('shows an empty state when Plaid has not identified streams', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValue([])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No recurring transactions found yet.')
+  })
+
+  it('keeps the rest of the dashboard working when recurring streams fail', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockRejectedValueOnce(new Error('Server unavailable'))
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
+    expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
+    expect(wrapper.text()).toContain('We couldn’t load your recurring transactions.')
   })
 })

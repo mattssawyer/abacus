@@ -9,6 +9,12 @@ import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.model.LinkTokenCreateRequest;
 import com.plaid.client.model.LinkTokenCreateResponse;
+import com.plaid.client.model.PersonalFinanceCategory;
+import com.plaid.client.model.RecurringTransactionFrequency;
+import com.plaid.client.model.TransactionStream;
+import com.plaid.client.model.TransactionStreamAmount;
+import com.plaid.client.model.TransactionsRecurringGetRequest;
+import com.plaid.client.model.TransactionsRecurringGetResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
@@ -51,6 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
@@ -91,6 +98,9 @@ class PlaidControllerTests {
 
     @Mock
     private Call<AccountsGetResponse> accountsCall;
+
+    @Mock
+    private Call<TransactionsRecurringGetResponse> recurringCall;
 
     private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
             TestPlaidKeysets.create());
@@ -467,6 +477,140 @@ class PlaidControllerTests {
         controller.getTransactions(jwt, 5, "account-1");
 
         verify(transactionRepository).findRecent(USER_ID, "account-1", Pageable.ofSize(5));
+    }
+
+    @Test
+    void returnsActiveRecurringStreamsSoonestFirst() throws IOException {
+        PlaidItem item = new PlaidItem(
+                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
+        TransactionsRecurringGetResponse plaidResponse = new TransactionsRecurringGetResponse()
+                .outflowStreams(List.of(
+                        stream("rent", "checking", "Landlord", 1450.0, RecurringTransactionFrequency.MONTHLY,
+                                LocalDate.of(2026, 10, 1), true),
+                        stream("inactive", "checking", "Old Gym", 30.0, RecurringTransactionFrequency.MONTHLY,
+                                LocalDate.of(2026, 9, 22), false),
+                        stream("later", "checking", "Netflix", 15.49, RecurringTransactionFrequency.MONTHLY,
+                                LocalDate.of(2026, 10, 12), true)))
+                .inflowStreams(List.of(
+                        stream("pay", "checking", "Payroll", -2400.0, RecurringTransactionFrequency.BIWEEKLY,
+                                LocalDate.of(2026, 9, 25), true),
+                        unnamedInterestDeposit(),
+                        interestPaymentDeposit()));
+
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
+        when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
+                .thenReturn(recurringCall);
+        when(recurringCall.execute()).thenReturn(Response.success(plaidResponse));
+
+        List<PlaidController.RecurringStreamResponse> streams =
+                controller.getRecurringTransactions(jwt, null).get("streams");
+
+        assertEquals(List.of("pay", "rent", "later"), streams.stream()
+                .map(PlaidController.RecurringStreamResponse::streamId)
+                .toList());
+        assertEquals(new BigDecimal("1450.0"), streams.get(1).amount());
+        assertEquals("MONTHLY", streams.get(1).frequency());
+        assertTrue(streams.get(0).isInflow());
+        assertEquals("FOOD_AND_DRINK", streams.get(1).category());
+
+        ArgumentCaptor<TransactionsRecurringGetRequest> requestCaptor =
+                ArgumentCaptor.forClass(TransactionsRecurringGetRequest.class);
+        verify(plaidApi).transactionsRecurringGet(requestCaptor.capture());
+        assertEquals("access-token", requestCaptor.getValue().getAccessToken());
+        assertNull(requestCaptor.getValue().getAccountIds());
+    }
+
+    @Test
+    void omitsUnnamedInterestDepositsFromRecurringStreams() throws IOException {
+        PlaidItem item = new PlaidItem(
+                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
+        when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
+                .thenReturn(recurringCall);
+        when(recurringCall.execute()).thenReturn(Response.success(new TransactionsRecurringGetResponse()
+                .outflowStreams(List.of())
+                .inflowStreams(List.of(unnamedInterestDeposit(), interestPaymentDeposit()))));
+
+        assertEquals(List.of(), controller.getRecurringTransactions(jwt, null).get("streams"));
+    }
+
+    @Test
+    void filtersRecurringStreamsToTheRequestedAccount() throws IOException {
+        PlaidItem item = new PlaidItem(
+                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
+        when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
+                .thenReturn(recurringCall);
+        when(recurringCall.execute()).thenReturn(Response.success(new TransactionsRecurringGetResponse()
+                .outflowStreams(List.of())
+                .inflowStreams(List.of())));
+
+        controller.getRecurringTransactions(jwt, "account-1");
+
+        ArgumentCaptor<TransactionsRecurringGetRequest> requestCaptor =
+                ArgumentCaptor.forClass(TransactionsRecurringGetRequest.class);
+        verify(plaidApi).transactionsRecurringGet(requestCaptor.capture());
+        assertEquals(List.of("account-1"), requestCaptor.getValue().getAccountIds());
+    }
+
+    @Test
+    void returnsNoRecurringStreamsWhenNothingIsLinked() throws IOException {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
+
+        assertEquals(Map.of("streams", List.of()), controller.getRecurringTransactions(jwt, null));
+        verifyNoInteractions(plaidApi);
+    }
+
+    private static TransactionStream stream(
+            String streamId,
+            String accountId,
+            String merchant,
+            double amount,
+            RecurringTransactionFrequency frequency,
+            LocalDate nextDate,
+            boolean active
+    ) {
+        return new TransactionStream()
+                .streamId(streamId)
+                .accountId(accountId)
+                .merchantName(merchant)
+                .description(merchant.toUpperCase())
+                .lastAmount(new TransactionStreamAmount().amount(amount).isoCurrencyCode("USD"))
+                .frequency(frequency)
+                .predictedNextDate(nextDate)
+                .lastDate(nextDate.minusMonths(1))
+                .isActive(active)
+                .personalFinanceCategory(new PersonalFinanceCategory().primary("FOOD_AND_DRINK"));
+    }
+
+    private static TransactionStream unnamedInterestDeposit() {
+        return new TransactionStream()
+                .streamId("interest")
+                .accountId("checking")
+                .lastAmount(new TransactionStreamAmount().amount(-0.12).isoCurrencyCode("USD"))
+                .frequency(RecurringTransactionFrequency.MONTHLY)
+                .predictedNextDate(LocalDate.of(2026, 10, 1))
+                .lastDate(LocalDate.of(2026, 9, 1))
+                .isActive(true)
+                .personalFinanceCategory(new PersonalFinanceCategory()
+                        .primary("INCOME")
+                        .detailed("INCOME_INTEREST_EARNED"));
+    }
+
+    private static TransactionStream interestPaymentDeposit() {
+        return new TransactionStream()
+                .streamId("interest-label")
+                .accountId("checking")
+                .description("INTEREST PAYMENT")
+                .lastAmount(new TransactionStreamAmount().amount(-0.12).isoCurrencyCode("USD"))
+                .frequency(RecurringTransactionFrequency.MONTHLY)
+                .predictedNextDate(LocalDate.of(2026, 10, 1))
+                .lastDate(LocalDate.of(2026, 9, 1))
+                .isActive(true);
     }
 
     @Test
