@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useAuth } from "@clerk/vue"
-import HomePage from "./views/HomePage.vue"
-import SignInPage from "./views/SignInPage.vue"
-import { setAccessTokenProvider } from "./api/client"
+import { useAuth } from '@clerk/vue'
+import HomePage from './views/HomePage.vue'
+import SignInPage from './views/SignInPage.vue'
+import { setAccessTokenProvider } from './api/client'
 
 const { getToken, isSignedIn, isLoaded } = useAuth()
 
@@ -14,9 +14,7 @@ setAccessTokenProvider(async () => (await getToken.value()) ?? null)
     <SignInPage v-if="!isSignedIn" />
     <HomePage v-else />
   </template>
-  <main v-else class="session-loading" role="status" aria-live="polite">
-    Loading…
-  </main>
+  <main v-else class="session-loading" role="status" aria-live="polite">Loading…</main>
 </template>
 
 <style scoped>
@@ -24,6 +22,6 @@ setAccessTokenProvider(async () => (await getToken.value()) ?? null)
   display: grid;
   min-height: 100svh;
   place-items: center;
-  color: var(--p-text-muted-color);
+  color: var(--app-text-secondary);
 }
 </style>

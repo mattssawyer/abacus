@@ -87,8 +87,6 @@ function mountHome() {
       plugins: [[PrimeVue, { unstyled: true }]],
       stubs: {
         AppSidebar: true,
-        SidebarLayout: { template: '<div><slot /></div>' },
-        SidebarMain: { template: '<div><slot /></div>' },
         // Chart.js needs a real canvas, so assert on the data the chart is handed instead.
         Chart: {
           props: ['data'],
@@ -161,7 +159,8 @@ describe('homepage balances', () => {
 
     expect(getAccounts).toHaveBeenCalledOnce()
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
-    expect(wrapper.get('.balance-card').text()).toBe('Balance$1,250.50')
+    expect(wrapper.get('.balance-card').text()).toContain('Balance')
+    expect(wrapper.get('.balance-card').text()).toContain('$1,250.50')
     expect(wrapper.text()).not.toContain('Start with an account.')
   })
 
@@ -254,12 +253,12 @@ describe('homepage greeting', () => {
     vi.setSystemTime(new Date(2026, 8, 18, 9, 0))
     const morning = mountHome()
     await flushPromises()
-    expect(morning.get('h2').text()).toBe('Good morning, Ada')
+    expect(morning.get('h1').text()).toBe('Good morning, Ada')
 
     vi.setSystemTime(new Date(2026, 8, 18, 20, 0))
     const evening = mountHome()
     await flushPromises()
-    expect(evening.get('h2').text()).toBe('Good evening, Ada')
+    expect(evening.get('h1').text()).toBe('Good evening, Ada')
   })
 
   it('drops the name rather than guessing when Clerk has no first name', async () => {
@@ -269,7 +268,7 @@ describe('homepage greeting', () => {
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(wrapper.get('h2').text()).toBe('Good morning')
+    expect(wrapper.get('h1').text()).toBe('Good morning')
   })
 
   it('greets without a name while Clerk is still loading', async () => {
@@ -279,7 +278,7 @@ describe('homepage greeting', () => {
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(wrapper.get('h2').text()).toBe('Good afternoon')
+    expect(wrapper.get('h1').text()).toBe('Good afternoon')
   })
 })
 
@@ -324,6 +323,9 @@ describe('homepage spending breakdown', () => {
     const slices = wrapper.findAll('.chart-stub li').map((slice) => slice.text())
     expect(slices).toEqual(['Rent & utilities: 1450', 'Food & drink: 82.5', 'Uncategorized: 12'])
     expect(wrapper.get('#spending-heading').text()).toContain('September')
+    expect(wrapper.get('.spending-legend').text()).toContain('Rent & utilities')
+    expect(wrapper.get('.spending-legend').text()).toContain('$1,450.00')
+    expect(wrapper.get('.spending-total-amount').text()).toBe('$1,545')
   })
 
   it('labels categories Plaid adds later without a hardcoded name', async () => {

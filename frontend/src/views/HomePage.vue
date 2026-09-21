@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { UserButton, useUser } from '@clerk/vue'
-import { ArrowRight, Landmark } from '@lucide/vue'
+import { Landmark, Plus } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { ChartOptions } from 'chart.js'
 import Button from 'primevue/button'
-import Card from 'primevue/card'
 import Chart from 'primevue/chart'
 import Message from 'primevue/message'
-import SidebarLayout from 'primevue/sidebarlayout'
-import SidebarMain from 'primevue/sidebarmain'
 import Skeleton from 'primevue/skeleton'
 import AppSidebar from '../components/AppSidebar.vue'
 import {
@@ -45,18 +42,20 @@ const CATEGORY_LABELS: Record<string, string> = {
   UNCATEGORIZED: 'Uncategorized',
 }
 
+// Category palette borrowed from Maybe: saturated enough to tell slices apart, muted enough
+// to sit on a neutral page.
 const CATEGORY_COLORS = [
-  '#343434',
-  '#a8705a',
-  '#7d8471',
-  '#c99a5b',
-  '#6b7f95',
-  '#9a6b7d',
-  '#5f7470',
-  '#c2b280',
-  '#857f9e',
-  '#8a837c',
-  '#bcb5ad',
+  '#6471eb',
+  '#4da568',
+  '#e99537',
+  '#db5a54',
+  '#df4e92',
+  '#c44fe9',
+  '#61c9ea',
+  '#eb5429',
+  '#805dee',
+  '#6ad28a',
+  '#9e9e9e',
 ]
 
 const linking = ref(false)
@@ -87,7 +86,12 @@ const greeting = computed(() => {
 const selectedAccount = computed(() =>
   accounts.value.find((account) => account.account_id === selectedAccountId.value),
 )
+const selectedAccountLabel = computed(() => {
+  const account = selectedAccount.value
+  return account ? accountLabel(account) : ''
+})
 const spendingCategories = computed(() => spending.value?.categories ?? [])
+const spendingTotal = computed(() => spending.value?.total ?? 0)
 const spendingMonth = computed(() =>
   spending.value
     ? new Intl.DateTimeFormat('en-US', { month: 'long' }).format(
@@ -95,28 +99,40 @@ const spendingMonth = computed(() =>
       )
     : '',
 )
+const spendingLegend = computed(() =>
+  spendingCategories.value.map((entry, index) => ({
+    ...entry,
+    label: categoryLabel(entry.category),
+    color: CATEGORY_COLORS[index % CATEGORY_COLORS.length] as string,
+  })),
+)
 const spendingChartData = computed(() => ({
-  labels: spendingCategories.value.map((entry) => categoryLabel(entry.category)),
+  labels: spendingLegend.value.map((entry) => entry.label),
   datasets: [
     {
-      data: spendingCategories.value.map((entry) => entry.amount),
-      backgroundColor: spendingCategories.value.map(
-        (_, index) => CATEGORY_COLORS[index % CATEGORY_COLORS.length],
-      ),
+      data: spendingLegend.value.map((entry) => entry.amount),
+      backgroundColor: spendingLegend.value.map((entry) => entry.color),
+      hoverBackgroundColor: spendingLegend.value.map((entry) => entry.color),
       borderColor: '#ffffff',
-      borderWidth: 2,
+      borderWidth: 3,
+      hoverOffset: 0,
     },
   ],
 }))
-const spendingChartOptions: ChartOptions<'pie'> = {
+const spendingChartOptions: ChartOptions<'doughnut'> = {
   maintainAspectRatio: false,
+  cutout: '76%',
+  layout: { padding: 2 },
   plugins: {
-    legend: {
-      position: 'bottom',
-      labels: { usePointStyle: true, boxWidth: 8, padding: 12, color: '#716b64' },
-    },
+    legend: { display: false },
     tooltip: {
-      callbacks: { label: (context) => ` ${context.label}: ${formatBalance(context.parsed)}` },
+      backgroundColor: '#171717',
+      titleFont: { family: 'Geist Variable', weight: 500 },
+      bodyFont: { family: 'Geist Variable' },
+      padding: 10,
+      cornerRadius: 8,
+      displayColors: false,
+      callbacks: { label: (context) => formatBalance(context.parsed) },
     },
   },
 }
@@ -132,6 +148,14 @@ onUnmounted(() => {
 function formatBalance(amount: number | null) {
   if (amount === null) return '—'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount)
+}
+
+function formatWholeDollars(amount: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(amount)
 }
 
 // Plaid reports money leaving the account as positive, which reads backwards in a ledger.
@@ -317,34 +341,43 @@ async function openPlaidLink() {
 </script>
 
 <template>
-  <SidebarLayout>
+  <div class="app-shell">
     <AppSidebar />
-    <SidebarMain as="div" class="home-page">
-      <header class="page-header">
-        <h1>Home</h1>
-        <UserButton />
-      </header>
+    <div class="home-page">
       <main class="page-content" aria-label="Dashboard">
         <div class="overview-heading">
           <div>
-            <h2>{{ greeting }}</h2>
+            <h1>{{ greeting }}</h1>
+            <p>Here's what's happening with your finances</p>
+          </div>
+          <div class="overview-actions">
+            <Button
+              v-if="hasConnections"
+              :label="linking ? 'Connecting…' : 'Add an account'"
+              :loading="linking"
+              :disabled="linking"
+              :aria-busy="linking"
+              class="add-account-button"
+              @click="openPlaidLink"
+            >
+              <template #icon v-if="!linking">
+                <Plus :size="16" :stroke-width="1.75" aria-hidden="true" />
+              </template>
+            </Button>
+            <UserButton />
           </div>
         </div>
 
-        <Card
+        <section
           v-if="initialLoading"
-          class="balance-card"
+          class="panel balance-card"
           role="status"
           aria-label="Loading your accounts"
           aria-busy="true"
         >
-          <template #title>
-            <h3 class="card-label">Balance</h3>
-          </template>
-          <template #content>
-            <Skeleton width="min(100%, 20rem)" height="5rem" />
-          </template>
-        </Card>
+          <p class="card-label">Balance</p>
+          <Skeleton width="min(100%, 20rem)" height="4.5rem" />
+        </section>
 
         <div v-else-if="connectionError" class="account-notice">
           <Message severity="error">{{ connectionError }}</Message>
@@ -358,39 +391,36 @@ async function openPlaidLink() {
 
         <div v-else-if="hasConnections" class="dashboard-grid">
           <div class="dashboard-main">
-            <Card
-              class="balance-card"
+            <section
+              class="panel balance-card"
               role="region"
               aria-labelledby="balance-heading"
               :aria-busy="loadingAccounts"
             >
-              <template #title>
-                <div class="balance-heading">
-                  <h3 id="balance-heading" class="card-label">Balance</h3>
-                  <select
-                    v-if="hasMultipleAccounts"
-                    class="account-select"
-                    aria-label="Account"
-                    :value="selectedAccountId"
-                    :disabled="loadingAccounts"
-                    @change="onAccountChange($event)"
+              <div class="balance-heading">
+                <h2 id="balance-heading" class="card-label">Balance</h2>
+                <select
+                  v-if="hasMultipleAccounts"
+                  class="account-select"
+                  aria-label="Account"
+                  :value="selectedAccountId"
+                  :disabled="loadingAccounts"
+                  @change="onAccountChange($event)"
+                >
+                  <option
+                    v-for="account in accounts"
+                    :key="account.account_id"
+                    :value="account.account_id"
                   >
-                    <option
-                      v-for="account in accounts"
-                      :key="account.account_id"
-                      :value="account.account_id"
-                    >
-                      {{ accountLabel(account) }}
-                    </option>
-                  </select>
-                </div>
-              </template>
-              <template #content>
-                <div v-if="loadingAccounts" role="status" aria-label="Loading balances">
-                  <Skeleton width="min(100%, 20rem)" height="5rem" />
-                </div>
+                    {{ accountLabel(account) }}
+                  </option>
+                </select>
+              </div>
+              <div v-if="loadingAccounts" role="status" aria-label="Loading balances">
+                <Skeleton width="min(100%, 20rem)" height="4.5rem" />
+              </div>
+              <template v-else>
                 <p
-                  v-else
                   class="balance-amount"
                   aria-live="polite"
                   aria-atomic="true"
@@ -400,8 +430,11 @@ async function openPlaidLink() {
                 >
                   {{ formatBalance(selectedAccount?.balances.current ?? null) }}
                 </p>
+                <p v-if="!hasMultipleAccounts && selectedAccountLabel" class="balance-account">
+                  {{ selectedAccountLabel }}
+                </p>
               </template>
-            </Card>
+            </section>
 
             <div
               v-if="!loadingAccounts && (balanceError || !accounts.length)"
@@ -418,131 +451,144 @@ async function openPlaidLink() {
               />
             </div>
 
-            <Card
-              class="transactions-card"
+            <section
+              class="panel transactions-card"
               role="region"
               aria-labelledby="recent-transactions-heading"
               :aria-busy="loadingTransactions"
             >
-              <template #title>
-                <h3 id="recent-transactions-heading" class="card-label">Recent transactions</h3>
-              </template>
-              <template #content>
-                <div
-                  v-if="loadingTransactions"
-                  class="transactions-loading"
-                  role="status"
-                  aria-label="Loading recent transactions"
-                >
-                  <Skeleton v-for="row in RECENT_TRANSACTION_COUNT" :key="row" height="2.5rem" />
-                </div>
-
-                <div v-else-if="transactionsError" class="account-notice">
-                  <Message severity="error">{{ transactionsError }}</Message>
-                  <Button
-                    label="Try again"
-                    severity="secondary"
-                    class="retry-button"
-                    @click="loadTransactions"
-                  />
-                </div>
-
-                <p v-else-if="!transactions.length" class="transactions-empty">
-                  No transactions yet. They’ll appear here once your bank sends them.
-                </p>
-
-                <ul v-else class="transactions-list">
-                  <li
-                    v-for="transaction in transactions"
-                    :key="transaction.transaction_id"
-                    class="transaction-row"
-                  >
-                    <img
-                      v-if="transaction.logo_url"
-                      class="transaction-logo"
-                      :src="transaction.logo_url"
-                      alt=""
-                    />
-                    <span
-                      v-else
-                      class="transaction-logo transaction-logo-fallback"
-                      aria-hidden="true"
-                    >
-                      {{ transactionLabel(transaction).charAt(0) }}
-                    </span>
-                    <span class="transaction-details">
-                      <span class="transaction-name">{{ transactionLabel(transaction) }}</span>
-                      <span class="transaction-meta">
-                        {{ formatTransactionDate(transaction.date) }}
-                        <template v-if="transaction.pending"> · Pending</template>
-                      </span>
-                    </span>
-                    <span
-                      class="transaction-amount"
-                      :class="{ 'transaction-amount-inflow': transaction.amount < 0 }"
-                    >
-                      {{ formatTransactionAmount(transaction) }}
-                    </span>
-                  </li>
-                </ul>
-              </template>
-            </Card>
-          </div>
-
-          <Card
-            class="spending-card"
-            role="region"
-            aria-labelledby="spending-heading"
-            :aria-busy="loadingSpending"
-          >
-            <template #title>
-              <h3 id="spending-heading" class="card-label">
-                Spending by category<template v-if="spendingMonth"> · {{ spendingMonth }}</template>
-              </h3>
-            </template>
-            <template #content>
+              <h2 id="recent-transactions-heading" class="card-label">Recent transactions</h2>
               <div
-                v-if="loadingSpending"
-                class="spending-chart"
+                v-if="loadingTransactions"
+                class="transactions-loading"
                 role="status"
-                aria-label="Loading your spending breakdown"
+                aria-label="Loading recent transactions"
               >
-                <Skeleton width="100%" height="100%" />
+                <Skeleton v-for="row in RECENT_TRANSACTION_COUNT" :key="row" height="2.75rem" />
               </div>
 
-              <div v-else-if="spendingError" class="account-notice">
-                <Message severity="error">{{ spendingError }}</Message>
+              <div v-else-if="transactionsError" class="account-notice">
+                <Message severity="error">{{ transactionsError }}</Message>
                 <Button
                   label="Try again"
                   severity="secondary"
                   class="retry-button"
-                  @click="loadSpending"
+                  @click="loadTransactions"
                 />
               </div>
 
-              <p v-else-if="!spendingCategories.length" class="spending-empty">
-                No spending recorded this month yet.
+              <p v-else-if="!transactions.length" class="transactions-empty">
+                No transactions yet. They’ll appear here once your bank sends them.
               </p>
 
-              <div v-else class="spending-chart">
+              <ul v-else class="transactions-list">
+                <li
+                  v-for="transaction in transactions"
+                  :key="transaction.transaction_id"
+                  class="transaction-row"
+                >
+                  <img
+                    v-if="transaction.logo_url"
+                    class="transaction-logo"
+                    :src="transaction.logo_url"
+                    alt=""
+                  />
+                  <span
+                    v-else
+                    class="transaction-logo transaction-logo-fallback"
+                    aria-hidden="true"
+                  >
+                    {{ transactionLabel(transaction).charAt(0) }}
+                  </span>
+                  <span class="transaction-details">
+                    <span class="transaction-name">{{ transactionLabel(transaction) }}</span>
+                    <span class="transaction-meta">
+                      {{ formatTransactionDate(transaction.date) }}
+                      <template v-if="transaction.pending"> · Pending</template>
+                    </span>
+                  </span>
+                  <span
+                    class="transaction-amount"
+                    :class="{ 'transaction-amount-inflow': transaction.amount < 0 }"
+                  >
+                    {{ formatTransactionAmount(transaction) }}
+                  </span>
+                </li>
+              </ul>
+            </section>
+          </div>
+
+          <section
+            class="panel spending-card"
+            role="region"
+            aria-labelledby="spending-heading"
+            :aria-busy="loadingSpending"
+          >
+            <h2 id="spending-heading" class="card-label">
+              Spending<template v-if="spendingMonth"> · {{ spendingMonth }}</template>
+            </h2>
+            <div
+              v-if="loadingSpending"
+              class="spending-chart"
+              role="status"
+              aria-label="Loading your spending breakdown"
+            >
+              <Skeleton width="100%" height="100%" border-radius="50%" />
+            </div>
+
+            <div v-else-if="spendingError" class="account-notice">
+              <Message severity="error">{{ spendingError }}</Message>
+              <Button
+                label="Try again"
+                severity="secondary"
+                class="retry-button"
+                @click="loadSpending"
+              />
+            </div>
+
+            <p v-else-if="!spendingCategories.length" class="spending-empty">
+              No spending recorded this month yet.
+            </p>
+
+            <div v-else class="spending-body">
+              <div class="spending-chart">
                 <Chart
-                  type="pie"
+                  type="doughnut"
                   :data="spendingChartData"
                   :options="spendingChartOptions"
                   class="spending-chart-canvas"
                   :aria-label="`Spending by category for ${spendingMonth}`"
                 />
+                <div class="spending-total" aria-hidden="true">
+                  <span class="spending-total-amount">{{ formatWholeDollars(spendingTotal) }}</span>
+                  <span class="spending-total-label">this month</span>
+                </div>
               </div>
-            </template>
-          </Card>
+              <ul class="spending-legend">
+                <li
+                  v-for="entry in spendingLegend"
+                  :key="entry.category"
+                  class="spending-legend-row"
+                >
+                  <span
+                    class="spending-swatch"
+                    :style="{ backgroundColor: entry.color }"
+                    aria-hidden="true"
+                  />
+                  <span class="spending-legend-label">{{ entry.label }}</span>
+                  <span class="spending-legend-amount">{{ formatBalance(entry.amount) }}</span>
+                </li>
+              </ul>
+            </div>
+          </section>
         </div>
 
-        <section v-else class="account-prompt" aria-labelledby="account-prompt-heading">
+        <section v-else class="panel account-prompt" aria-labelledby="account-prompt-heading">
           <div class="account-prompt-content">
             <div class="account-icon" aria-hidden="true">
-              <Landmark :size="24" :stroke-width="1.5" />
+              <Landmark :size="22" :stroke-width="1.5" />
             </div>
-            <h3 id="account-prompt-heading">Start with an account.</h3>
+            <h2 id="account-prompt-heading">Start with an account.</h2>
             <p>Connect a bank or credit card account to bring your finances into view.</p>
             <Button
               :label="linking ? 'Connecting…' : 'Add an account'"
@@ -552,7 +598,7 @@ async function openPlaidLink() {
               @click="openPlaidLink"
             >
               <template #icon v-if="!linking">
-                <ArrowRight :size="16" :stroke-width="1.75" aria-hidden="true" />
+                <Plus :size="16" :stroke-width="1.75" aria-hidden="true" />
               </template>
             </Button>
             <span class="connection-note">Connect through Plaid</span>
@@ -570,34 +616,27 @@ async function openPlaidLink() {
           />
         </div>
       </main>
-    </SidebarMain>
-  </SidebarLayout>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.home-page {
-  min-width: 0;
-  padding: 0;
-}
-
-.page-header {
+.app-shell {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  min-height: 4.5rem;
-  padding-inline: clamp(1.25rem, 4vw, 3rem);
-  border-bottom: 1px solid var(--app-border);
+  align-items: stretch;
+  min-height: 100svh;
 }
 
-h1 {
-  font-size: 0.875rem;
-  font-weight: 500;
+.home-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .page-content {
-  max-width: 80rem;
-  padding: clamp(1.25rem, 4vw, 3rem);
+  width: min(100%, 72rem);
+  padding: 2rem clamp(1.25rem, 4vw, 2.5rem) 3rem;
 }
 
 .overview-heading {
@@ -605,26 +644,39 @@ h1 {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 1.25rem;
+  gap: 1rem;
   margin-bottom: 1.75rem;
 }
 
-h2 {
-  font-size: clamp(1.375rem, 3vw, 1.75rem);
+h1 {
+  font-size: clamp(1.5rem, 3vw, 1.875rem);
   font-weight: 550;
-  line-height: 1.25;
-  letter-spacing: -0.045em;
+  line-height: 1.2;
+  letter-spacing: -0.04em;
 }
 
 .overview-heading p {
-  margin-top: 0.5rem;
-  color: var(--app-muted);
+  margin-top: 0.35rem;
+  color: var(--app-text-secondary);
+}
+
+.overview-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.overview-actions :deep(.cl-userButtonTrigger),
+.overview-actions :deep(.cl-avatarBox) {
+  width: 2rem;
+  height: 2rem;
 }
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.9fr);
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 0.85fr);
+  align-items: start;
   gap: 1rem;
 }
 
@@ -643,64 +695,111 @@ h2 {
 .transactions-card,
 .spending-card,
 .account-prompt {
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-panel-radius);
-  box-shadow: var(--app-shadow);
+  padding: 1.25rem 1.5rem 1.5rem;
 }
 
-.balance-card :deep(.p-card-body) {
-  padding: clamp(1.75rem, 4vw, 2.75rem);
-}
-
-.transactions-card :deep(.p-card-body),
-.spending-card :deep(.p-card-body) {
-  padding: clamp(1.25rem, 3vw, 2rem);
+.balance-card {
+  padding: 1.5rem 1.75rem 1.75rem;
 }
 
 .spending-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   min-width: 0;
+  min-height: 100%;
 }
 
-.spending-card :deep(.p-card-body) {
-  height: 100%;
-}
-
-.spending-card :deep(.p-card-content) {
+.spending-body {
   display: flex;
   flex: 1;
   flex-direction: column;
+  gap: 1.25rem;
   min-height: 0;
 }
 
 .spending-chart {
-  flex: 1;
-  min-height: 18rem;
+  position: relative;
+  flex: none;
+  width: min(100%, 16.5rem);
+  height: 16.5rem;
+  margin: 0.5rem auto 0;
 }
 
 .spending-chart-canvas {
   height: 100%;
 }
 
+.spending-total {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.spending-total-amount {
+  font-size: 1.25rem;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.spending-total-label {
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+}
+
+.spending-legend {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spending-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 1.75rem;
+}
+
+.spending-swatch {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.spending-legend-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spending-legend-amount {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  color: var(--app-text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .spending-empty {
-  color: var(--app-muted);
+  color: var(--app-text-secondary);
   line-height: 1.65;
 }
 
-@media (max-width: 900px) {
-  .dashboard-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .spending-chart {
-    min-height: 20rem;
-  }
-}
-
 .card-label {
-  color: var(--app-muted);
+  margin: 0;
+  color: var(--app-text-secondary);
   font-size: 0.8125rem;
   font-weight: 500;
   letter-spacing: -0.005em;
@@ -711,48 +810,63 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .account-select {
   min-width: 11rem;
   max-width: 16rem;
-  padding: 0.35rem 0.6rem;
+  appearance: none;
+  padding: 0.375rem 1.75rem 0.375rem 0.625rem;
   color: var(--app-text);
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 0.5rem;
+  background-color: var(--app-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23737373' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.75' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 0.4rem center;
+  background-repeat: no-repeat;
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--app-radius-chip);
+  box-shadow: var(--app-shadow-xs);
   font: inherit;
   font-size: 0.8125rem;
+  font-weight: 500;
 }
 
 .transactions-loading {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.625rem;
+  margin-top: 0.75rem;
 }
 
 .transactions-empty {
-  color: var(--app-muted);
+  margin-top: 0.75rem;
+  color: var(--app-text-secondary);
   line-height: 1.65;
 }
 
 .transactions-list {
   display: grid;
-  gap: 0.25rem;
-  margin: 0;
+  margin: 0.5rem 0 0;
   padding: 0;
   list-style: none;
 }
 
 .transaction-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.875rem;
+  gap: 0.75rem;
+  min-height: 3.25rem;
   padding: 0.625rem 0;
-  border-bottom: 1px solid var(--app-border);
 }
 
-.transaction-row:last-child {
-  border-bottom: none;
+.transaction-row:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 2.75rem;
+  height: 1px;
+  background: var(--app-divider);
 }
 
 .transaction-logo {
@@ -762,21 +876,20 @@ h2 {
   height: 2rem;
   place-items: center;
   object-fit: cover;
-  background: var(--app-sidebar);
-  border: 1px solid var(--app-border);
+  background: var(--app-inset);
   border-radius: 50%;
 }
 
 .transaction-logo-fallback {
-  color: var(--app-muted);
-  font-size: 0.8125rem;
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
   font-weight: 550;
   text-transform: uppercase;
 }
 
 .transaction-details {
   display: grid;
-  gap: 0.125rem;
+  gap: 0.0625rem;
   min-width: 0;
 }
 
@@ -790,7 +903,7 @@ h2 {
 }
 
 .transaction-meta {
-  color: var(--app-muted);
+  color: var(--app-text-secondary);
   font-size: 0.75rem;
 }
 
@@ -805,17 +918,23 @@ h2 {
 }
 
 .transaction-amount-inflow {
-  color: var(--p-green-600);
+  color: var(--app-success);
 }
 
 .balance-amount {
   overflow-wrap: anywhere;
   color: var(--app-text);
-  font-size: clamp(2.75rem, 6vw, 4.25rem);
+  font-size: clamp(2.5rem, 6vw, 3.75rem);
   font-weight: 550;
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-  letter-spacing: -0.055em;
+  line-height: 1.1;
+  letter-spacing: -0.05em;
+}
+
+.balance-account {
+  margin-top: 0.375rem;
+  color: var(--app-text-secondary);
+  font-size: 0.875rem;
 }
 
 .retry-button {
@@ -824,45 +943,44 @@ h2 {
 
 .account-prompt {
   display: grid;
-  min-height: 25rem;
+  min-height: 24rem;
   place-items: center;
   padding: 3rem 1.5rem;
 }
 
 .account-prompt-content {
-  width: min(100%, 23rem);
+  width: min(100%, 22rem);
   text-align: center;
 }
 
 .account-icon {
   display: grid;
-  width: 3rem;
-  height: 3rem;
+  width: 2.75rem;
+  height: 2.75rem;
   place-items: center;
-  margin: 0 auto 1.5rem;
-  background: var(--app-sidebar);
-  color: var(--p-surface-700);
-  border: 1px solid var(--app-border);
-  border-radius: 0.875rem;
+  margin: 0 auto 1.25rem;
+  background: var(--app-inset);
+  color: var(--app-text-secondary);
+  border-radius: var(--app-radius-control);
 }
 
-h3 {
+.account-prompt h2 {
   font-size: 1.25rem;
   font-weight: 550;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.03em;
 }
 
 .account-prompt p {
-  margin: 0.75rem 0 1.5rem;
-  color: var(--app-muted);
-  line-height: 1.65;
+  margin: 0.5rem 0 1.25rem;
+  color: var(--app-text-secondary);
+  line-height: 1.6;
 }
 
 .connection-note {
   display: block;
-  margin-top: 0.875rem;
+  margin-top: 0.75rem;
   font-size: 0.75rem;
-  color: var(--app-muted);
+  color: var(--app-text-subdued);
 }
 
 .account-notice {
@@ -870,9 +988,34 @@ h3 {
   text-align: left;
 }
 
+@media (max-width: 900px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-content {
+    padding: 1.25rem 1.25rem calc(var(--app-tabbar-height) + env(safe-area-inset-bottom) + 1.5rem);
+  }
+
+  .overview-heading {
+    margin-bottom: 1.25rem;
+  }
+}
+
 @media (max-width: 640px) {
+  .balance-card,
+  .transactions-card,
+  .spending-card {
+    padding: 1.125rem 1.125rem 1.25rem;
+  }
+
+  .spending-chart {
+    width: min(100%, 14.5rem);
+    height: 14.5rem;
+  }
+
   .account-prompt {
-    min-height: 22rem;
+    min-height: 20rem;
     padding: 2rem 1rem;
   }
 }

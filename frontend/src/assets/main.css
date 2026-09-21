@@ -2,21 +2,46 @@
 
 :root {
   --app-font: 'Geist Variable', system-ui, sans-serif;
-  --app-canvas: #faf8f5;
-  --app-sidebar: #f4f1ed;
+
+  /* Surfaces, from canvas outward to the containers that sit on it. */
+  --app-canvas: #f7f7f7;
   --app-surface: #ffffff;
-  --app-border: #e8e3dd;
-  --app-text: #262626;
-  --app-muted: #716b64;
-  --app-radius: 0.625rem;
-  --app-panel-radius: 1rem;
-  --app-shadow: 0 1px 3px rgb(47 41 38 / 4%);
-  --app-sidebar-width: 14rem;
+  --app-inset: #f0f0f0;
+  --app-inset-hover: #e7e7e7;
+
+  /* Ink */
+  --app-text: #171717;
+  --app-text-secondary: #737373;
+  --app-text-subdued: #9e9e9e;
+  --app-text-inverse: #ffffff;
+
+  --app-success: #10a861;
+  --app-danger: #c91313;
+  --app-danger-surface: #fff1f0;
+  --app-danger-border: #ffdedb;
+
+  /* Hairlines are alpha so they read the same on every surface. */
+  --app-divider: rgb(11 11 11 / 8%);
+  --app-ring: rgb(11 11 11 / 5%);
+  --app-control-border: rgb(11 11 11 / 10%);
+
+  --app-shadow-xs: 0 1px 2px rgb(11 11 11 / 6%);
+  --app-shadow-sm: 0 1px 6px rgb(11 11 11 / 6%);
+  --app-shadow-border: var(--app-shadow-xs), 0 0 0 1px var(--app-ring);
+  --app-shadow-border-sm: var(--app-shadow-sm), 0 0 0 1px var(--app-ring);
+
+  --app-radius-container: 12px;
+  --app-radius-control: 10px;
+  --app-radius-chip: 8px;
+
+  --app-rail-width: 5.25rem;
+  --app-tabbar-height: 4rem;
 }
 
 #app,
 body {
   min-height: 100vh;
+  min-height: 100svh;
 }
 
 body {
@@ -29,8 +54,14 @@ body {
   flex-shrink: 0;
 }
 
-@media (max-width: 640px) {
-  :root {
-    --app-sidebar-width: 4.5rem;
-  }
+:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: 2px;
+}
+
+/* Shared container treatment: white card with a hairline ring. */
+.panel {
+  background: var(--app-surface);
+  border-radius: var(--app-radius-container);
+  box-shadow: var(--app-shadow-border);
 }
