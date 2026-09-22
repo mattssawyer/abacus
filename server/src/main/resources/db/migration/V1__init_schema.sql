@@ -93,3 +93,42 @@ CREATE INDEX recurring_streams_user_id_idx ON recurring_streams (user_id);
 CREATE INDEX recurring_streams_item_id_idx ON recurring_streams (item_id);
 
 CREATE INDEX recurring_streams_account_id_idx ON recurring_streams (account_id);
+
+CREATE TABLE spending_plans (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL UNIQUE REFERENCES users(id),
+    -- Account the plan was set up from. No FK: the plan outlives an unlinked account.
+    account_id VARCHAR(255),
+    -- Monthly take-home pay; null until entered.
+    take_home NUMERIC(19, 4),
+    -- Share of fixed costs added on top for forgotten and rising costs; the plan's default is 15%.
+    fixed_cost_buffer_percent NUMERIC(5, 2) NOT NULL DEFAULT 15,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE spending_plan_lines (
+    id UUID PRIMARY KEY,
+    plan_id UUID NOT NULL REFERENCES spending_plans(id) ON DELETE CASCADE,
+    bucket VARCHAR(32) NOT NULL CHECK (bucket IN ('FIXED_COSTS', 'INVESTMENTS', 'SAVINGS')),
+    name VARCHAR(255) NOT NULL,
+    -- Only used when the line has no items; otherwise the line is the sum of its items.
+    amount NUMERIC(19, 4),
+    position INTEGER NOT NULL,
+    from_paycheck BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX spending_plan_lines_plan_id_idx ON spending_plan_lines (plan_id, position);
+
+CREATE TABLE spending_plan_items (
+    id UUID PRIMARY KEY,
+    line_id UUID NOT NULL REFERENCES spending_plan_lines(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    amount NUMERIC(19, 4),
+    position INTEGER NOT NULL,
+    -- Recurring stream this item was filled from. No FK: recurring_streams rows are
+    -- deleted and re-inserted on every sync, but Plaid keeps stream ids stable.
+    stream_id VARCHAR(255)
+);
+
+CREATE INDEX spending_plan_items_line_id_idx ON spending_plan_items (line_id, position);

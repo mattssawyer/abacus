@@ -11,4 +11,6 @@ public interface PlaidAccountRepository extends JpaRepository<PlaidAccount, Stri
     List<PlaidAccount> findAllByUserIdOrderByNameAscAccountIdAsc(UUID userId);
 
     boolean existsByUserId(UUID userId);
+
+    boolean existsByAccountIdAndUserId(String accountId, UUID userId);
 }
