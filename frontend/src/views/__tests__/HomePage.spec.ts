@@ -94,6 +94,7 @@ const rent: RecurringStream = {
   last_date: '2026-09-01',
   is_inflow: false,
   category: 'RENT_AND_UTILITIES',
+  category_detailed: 'RENT_AND_UTILITIES_RENT',
 }
 
 let linkOptions: Parameters<Window['Plaid']['create']>[0]
@@ -301,12 +302,23 @@ describe('homepage greeting', () => {
 })
 
 describe('homepage recent transactions', () => {
+  it('falls back when a transaction has no merchant or name', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getTransactions).mockResolvedValue([
+      { ...coffee, merchant_name: '', name: null },
+    ])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.transactions-card .transaction-name').text()).toBe('Transaction')
+  })
+
   it('lists recent transactions with money leaving the account as negative', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(getTransactions).toHaveBeenCalledWith(8, 'checking')
+    expect(getTransactions).toHaveBeenCalledWith(25, 'checking')
     expect(wrapper.get('.transaction-name').text()).toBe('Coffee Shop')
     expect(wrapper.get('.transaction-amount').text()).toBe('-$4.75')
     expect(wrapper.get('.transaction-meta').text()).toContain('Sep 17')
@@ -398,17 +410,17 @@ describe('homepage account selector', () => {
 
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('[aria-label="Account"]').text()).toContain('Checking ••1234')
-    expect(getTransactions).toHaveBeenLastCalledWith(8, 'checking')
+    expect(getTransactions).toHaveBeenLastCalledWith(25, 'checking')
     expect(getSpendingByCategory).toHaveBeenLastCalledWith('checking')
-    expect(getRecurringTransactions).toHaveBeenLastCalledWith('checking')
+    expect(getRecurringTransactions).toHaveBeenLastCalledWith('checking', 20)
 
     await wrapper.get('[aria-label="Account"]').setValue('savings')
     await flushPromises()
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
-    expect(getTransactions).toHaveBeenLastCalledWith(8, 'savings')
+    expect(getTransactions).toHaveBeenLastCalledWith(25, 'savings')
     expect(getSpendingByCategory).toHaveBeenLastCalledWith('savings')
-    expect(getRecurringTransactions).toHaveBeenLastCalledWith('savings')
+    expect(getRecurringTransactions).toHaveBeenLastCalledWith('savings', 20)
   })
 
   it('restores the last selected account on reload', async () => {
@@ -419,18 +431,48 @@ describe('homepage account selector', () => {
     await flushPromises()
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
-    expect(getTransactions).toHaveBeenCalledWith(8, 'savings')
-    expect(getRecurringTransactions).toHaveBeenCalledWith('savings')
+    expect(getTransactions).toHaveBeenCalledWith(25, 'savings')
+    expect(getRecurringTransactions).toHaveBeenCalledWith('savings', 20)
   })
 })
 
 describe('homepage recurring transactions', () => {
+  it('labels a stream from its category when Plaid sent no merchant name', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValue([
+      { ...rent, merchant_name: '', description: '   ', category: 'RENT_AND_UTILITIES' },
+    ])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.recurring-card .transaction-name').text()).toBe('Rent & utilities')
+    expect(wrapper.get('.recurring-card .transaction-logo-fallback').text()).toBe('R')
+  })
+
+  it('renders every recurring stream in a scrollable list', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValue(
+      Array.from({ length: 8 }, (_, index) => ({
+        ...rent,
+        stream_id: `stream-${index}`,
+        merchant_name: `Bill ${index + 1}`,
+      })),
+    )
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const list = wrapper.get('.recurring-card .transactions-list')
+    expect(list.attributes('tabindex')).toBe('0')
+    expect(wrapper.findAll('.recurring-card .transaction-name')).toHaveLength(8)
+    expect(wrapper.findAll('.recurring-card .transaction-name').at(-1)?.text()).toBe('Bill 8')
+  })
+
   it('lists upcoming recurring charges with cadence and next date', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(getRecurringTransactions).toHaveBeenCalledWith('checking')
+    expect(getRecurringTransactions).toHaveBeenCalledWith('checking', 20)
     expect(wrapper.get('#recurring-heading').text()).toBe('Recurring')
     expect(wrapper.get('.recurring-card .transaction-name').text()).toBe('Landlord')
     expect(wrapper.get('.recurring-card .transaction-meta').text()).toBe('Monthly · Next Oct 1')

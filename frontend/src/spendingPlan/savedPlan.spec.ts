@@ -1,0 +1,67 @@
+import { describe, expect, it } from 'vitest'
+import type { SpendingPlanResponse } from '../api/SpendingPlanService'
+import { defaultPlan, type PlanDraft } from './fromRecurring'
+import { fromSaved, toSaveRequest } from './savedPlan'
+
+const plan: PlanDraft = {
+  fixedCosts: [
+    { name: 'Rent/mortgage', amount: 1450, items: [], fromPaycheck: false },
+    {
+      name: 'Subscriptions',
+      amount: null,
+      fromPaycheck: false,
+      items: [
+        { name: 'Netflix', amount: 15.49, streamId: 'stream-netflix' },
+        { name: 'Gym', amount: 40, streamId: null },
+      ],
+    },
+  ],
+  investments: [{ name: '401(k)', amount: 600, items: [], fromPaycheck: true }],
+  savings: [{ name: 'Vacations', amount: null, items: [], fromPaycheck: false }],
+}
+
+describe('toSaveRequest', () => {
+  it('flattens the buckets into ordered lines in the API shape', () => {
+    const request = toSaveRequest('checking', 5200, 12.5, plan)
+
+    expect(request.account_id).toBe('checking')
+    expect(request.take_home).toBe(5200)
+    expect(request.fixed_cost_buffer_percent).toBe(12.5)
+    expect(request.lines.map((line) => [line.bucket, line.name])).toEqual([
+      ['FIXED_COSTS', 'Rent/mortgage'],
+      ['FIXED_COSTS', 'Subscriptions'],
+      ['INVESTMENTS', '401(k)'],
+      ['SAVINGS', 'Vacations'],
+    ])
+    expect(request.lines[1]?.items[0]).toEqual({
+      name: 'Netflix',
+      amount: 15.49,
+      stream_id: 'stream-netflix',
+    })
+    expect(request.lines[2]?.from_paycheck).toBe(true)
+  })
+})
+
+describe('fromSaved', () => {
+  it('rebuilds the same plan the editor saved', () => {
+    const response: SpendingPlanResponse = {
+      ...toSaveRequest('checking', 5200, 12.5, plan),
+      updated_at: '2026-09-22T19:30:00Z',
+    }
+
+    expect(fromSaved(response)).toEqual({
+      accountId: 'checking',
+      takeHome: 5200,
+      bufferPercent: 12.5,
+      plan,
+      updatedAt: '2026-09-22T19:30:00Z',
+    })
+  })
+
+  it('keeps buckets that were saved empty', () => {
+    const empty: PlanDraft = { ...defaultPlan(), investments: [], savings: [] }
+    const response = { ...toSaveRequest(null, null, 0, empty), updated_at: '2026-09-22T19:30:00Z' }
+
+    expect(fromSaved(response).plan).toEqual(empty)
+  })
+})

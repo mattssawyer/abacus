@@ -10,21 +10,18 @@ import com.plaid.client.model.LinkTokenCreateRequest;
 import com.plaid.client.model.LinkTokenCreateRequestUser;
 import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.model.Products;
-import com.plaid.client.model.RecurringTransactionFrequency;
-import com.plaid.client.model.TransactionStream;
-import com.plaid.client.model.TransactionStreamAmount;
-import com.plaid.client.model.TransactionsRecurringGetRequest;
-import com.plaid.client.model.TransactionsRecurringGetRequestOptions;
-import com.plaid.client.model.TransactionsRecurringGetResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
+import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
+import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
+import dev.matthewsawyer.finance_dashboard.service.PlaidRecurringStreamSyncService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
 import org.slf4j.Logger;
@@ -46,11 +43,9 @@ import retrofit2.Response;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -61,23 +56,22 @@ public class PlaidController {
     private static final Logger log = LoggerFactory.getLogger(PlaidController.class);
 
     private static final int MAX_TRANSACTION_LIMIT = 100;
-    private static final int MAX_RECURRING_STREAMS = 8;
+    private static final int DEFAULT_RECURRING_STREAMS = 8;
+    private static final int MAX_RECURRING_STREAMS = 50;
 
     // Plaid files paychecks and account transfers under the same category field as spending.
     private static final Set<String> NON_SPENDING_CATEGORIES =
             Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT");
 
-    // Bank interest and dividends show up as unnamed inflows; they are not recurring payments.
-    private static final Set<String> EXCLUDED_RECURRING_CATEGORIES =
-            Set.of("INCOME_INTEREST_EARNED", "INCOME_DIVIDENDS");
-
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
     private final PlaidAccountRepository accountRepository;
     private final PlaidTransactionRepository transactionRepository;
+    private final PlaidRecurringStreamRepository recurringStreamRepository;
     private final UserService userService;
     private final PlaidTokenEncryption tokenEncryption;
     private final PlaidTransactionSyncService transactionSyncService;
+    private final PlaidRecurringStreamSyncService recurringStreamSyncService;
     private final String webhookUrl;
 
     public PlaidController(
@@ -85,18 +79,22 @@ public class PlaidController {
             PlaidItemRepository plaidItemRepository,
             PlaidAccountRepository accountRepository,
             PlaidTransactionRepository transactionRepository,
+            PlaidRecurringStreamRepository recurringStreamRepository,
             UserService userService,
             PlaidTokenEncryption tokenEncryption,
             PlaidTransactionSyncService transactionSyncService,
+            PlaidRecurringStreamSyncService recurringStreamSyncService,
             @Value("${plaid.webhook.url:}") String webhookUrl
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
+        this.recurringStreamRepository = recurringStreamRepository;
         this.userService = userService;
         this.tokenEncryption = tokenEncryption;
         this.transactionSyncService = transactionSyncService;
+        this.recurringStreamSyncService = recurringStreamSyncService;
         this.webhookUrl = webhookUrl;
     }
 
@@ -154,20 +152,25 @@ public class PlaidController {
         item.updateAccessToken(encryptedToken);
         plaidItemRepository.save(item);
 
-        syncTransactions(item);
+        syncLinkedItem(item);
 
         return Map.of("item_id", exchange.getItemId());
     }
 
     /**
      * The item is already linked at this point, so a sync failure must not fail the
-     * request; the transactions webhook backfills whatever this missed.
+     * request; webhooks backfill whatever this missed.
      */
-    private void syncTransactions(PlaidItem item) {
+    private void syncLinkedItem(PlaidItem item) {
         try {
             transactionSyncService.syncItem(item);
         } catch (IOException | RuntimeException e) {
             log.warn("Initial transactions sync failed for item {}", item.getItemId(), e);
+        }
+        try {
+            recurringStreamSyncService.syncItem(item);
+        } catch (IOException | RuntimeException e) {
+            log.warn("Initial recurring stream sync failed for item {}", item.getItemId(), e);
         }
     }
 
@@ -209,43 +212,47 @@ public class PlaidController {
     @GetMapping("/transactions/recurring")
     public Map<String, List<RecurringStreamResponse>> getRecurringTransactions(
             @AuthenticationPrincipal Jwt jwt,
-            @RequestParam(name = "account_id", required = false) String accountId
-    ) throws IOException {
+            @RequestParam(name = "account_id", required = false) String accountId,
+            @RequestParam(name = "limit", required = false) Integer limit
+    ) {
         User user = userService.getOrCreateUser(jwt);
+        backfillRecurringStreams(user.getId());
+
         String accountFilter = blankToNull(accountId);
-        List<RecurringStreamResponse> streams = new ArrayList<>();
+        List<PlaidRecurringStream> stored = accountFilter == null
+                ? recurringStreamRepository.findAllByUserId(user.getId())
+                : recurringStreamRepository.findAllByUserIdAndAccountId(user.getId(), accountFilter);
 
-        for (PlaidItem item : plaidItemRepository.findAllByUserIdOrderByItemIdAsc(user.getId())) {
-            TransactionsRecurringGetRequest request = new TransactionsRecurringGetRequest()
-                    .accessToken(tokenEncryption.decrypt(
-                            item.getEncryptedAccessToken(), user.getId(), item.getItemId()))
-                    .options(new TransactionsRecurringGetRequestOptions()
-                            .includePersonalFinanceCategory(true));
-            if (accountFilter != null) {
-                request.accountIds(List.of(accountFilter));
-            }
+        List<RecurringStreamResponse> streams = stored.stream()
+                .map(RecurringStreamResponse::from)
+                .sorted(Comparator
+                        .comparing(RecurringStreamResponse::nextDate, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(RecurringStreamResponse::lastDate, Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
 
-            Response<TransactionsRecurringGetResponse> response =
-                    plaidApi.transactionsRecurringGet(request).execute();
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_GATEWAY, "Plaid recurring transactions get failed");
-            }
-
-            TransactionsRecurringGetResponse body = response.body();
-            streams.addAll(mapStreams(body.getOutflowStreams(), false));
-            streams.addAll(mapStreams(body.getInflowStreams(), true));
-        }
-
-        streams.sort(Comparator
-                .comparing(RecurringStreamResponse::nextDate, Comparator.nullsLast(Comparator.naturalOrder()))
-                .thenComparing(RecurringStreamResponse::lastDate, Comparator.nullsLast(Comparator.reverseOrder())));
-
-        if (streams.size() > MAX_RECURRING_STREAMS) {
-            streams = List.copyOf(streams.subList(0, MAX_RECURRING_STREAMS));
+        int cap = resolveRecurringLimit(limit);
+        if (streams.size() > cap) {
+            streams = List.copyOf(streams.subList(0, cap));
         }
 
         return Map.of("streams", streams);
+    }
+
+    /**
+     * Items linked before streams were stored have never been synced. Fetch once, then
+     * later loads read Postgres.
+     */
+    private void backfillRecurringStreams(UUID userId) {
+        for (PlaidItem item : plaidItemRepository.findAllByUserIdOrderByItemIdAsc(userId)) {
+            if (item.getRecurringSyncedAt() != null) {
+                continue;
+            }
+            try {
+                recurringStreamSyncService.syncItem(item);
+            } catch (IOException | RuntimeException e) {
+                log.warn("Recurring stream backfill failed for item {}", item.getItemId(), e);
+            }
+        }
     }
 
     public record RecurringStreamResponse(
@@ -259,85 +266,25 @@ public class PlaidController {
             @JsonProperty("next_date") LocalDate nextDate,
             @JsonProperty("last_date") LocalDate lastDate,
             @JsonProperty("is_inflow") boolean isInflow,
-            @JsonProperty("category") String category
+            @JsonProperty("category") String category,
+            @JsonProperty("category_detailed") String categoryDetailed
     ) {
-        static RecurringStreamResponse from(TransactionStream stream, boolean isInflow) {
-            TransactionStreamAmount last = stream.getLastAmount();
-            TransactionStreamAmount average = stream.getAverageAmount();
-            Double amount = last != null && last.getAmount() != null
-                    ? last.getAmount()
-                    : average == null ? null : average.getAmount();
-            String currency = last != null && last.getIsoCurrencyCode() != null
-                    ? last.getIsoCurrencyCode()
-                    : average == null ? null : average.getIsoCurrencyCode();
-            RecurringTransactionFrequency frequency = stream.getFrequency();
-            String frequencyValue = frequency == null
-                    || frequency == RecurringTransactionFrequency.ENUM_UNKNOWN
-                    ? RecurringTransactionFrequency.UNKNOWN.getValue()
-                    : frequency.getValue();
-            String category = stream.getPersonalFinanceCategory() == null
-                    ? null
-                    : stream.getPersonalFinanceCategory().getPrimary();
-
+        static RecurringStreamResponse from(PlaidRecurringStream stream) {
             return new RecurringStreamResponse(
                     stream.getStreamId(),
                     stream.getAccountId(),
                     stream.getMerchantName(),
                     stream.getDescription(),
-                    amount == null ? null : BigDecimal.valueOf(amount),
-                    currency,
-                    frequencyValue,
-                    stream.getPredictedNextDate(),
+                    stream.getAmount(),
+                    stream.getIsoCurrencyCode(),
+                    stream.getFrequency(),
+                    stream.getNextDate(),
                     stream.getLastDate(),
-                    isInflow,
-                    category
+                    stream.isInflow(),
+                    stream.getCategory(),
+                    stream.getCategoryDetailed()
             );
         }
-    }
-
-    private static List<RecurringStreamResponse> mapStreams(
-            List<TransactionStream> streams,
-            boolean isInflow
-    ) {
-        return Objects.requireNonNullElse(streams, List.<TransactionStream>of()).stream()
-                .filter(PlaidController::isRecurringPayment)
-                .map(stream -> RecurringStreamResponse.from(stream, isInflow))
-                .filter(stream -> stream.amount() != null)
-                .toList();
-    }
-
-    /**
-     * Recurring is for named bills and paychecks. Bank interest and other unlabeled credits
-     * are technically streams, but they are not useful on this card.
-     */
-    private static boolean isRecurringPayment(TransactionStream stream) {
-        if (Boolean.FALSE.equals(stream.getIsActive())) {
-            return false;
-        }
-        if (isBlank(stream.getMerchantName()) && isBlank(stream.getDescription())) {
-            return false;
-        }
-        String detailed = stream.getPersonalFinanceCategory() == null
-                ? null
-                : stream.getPersonalFinanceCategory().getDetailed();
-        if (detailed != null && EXCLUDED_RECURRING_CATEGORIES.contains(detailed)) {
-            return false;
-        }
-        String primary = stream.getPersonalFinanceCategory() == null
-                ? null
-                : stream.getPersonalFinanceCategory().getPrimary();
-        if ("INCOME".equals(primary) && isBlank(stream.getMerchantName())) {
-            return false;
-        }
-        return !looksLikeInterest(stream.getMerchantName()) && !looksLikeInterest(stream.getDescription());
-    }
-
-    private static boolean looksLikeInterest(String value) {
-        return value != null && value.toLowerCase().contains("interest");
-    }
-
-    private static boolean isBlank(String value) {
-        return value == null || value.isBlank();
     }
 
     public record TransactionResponse(
@@ -478,6 +425,13 @@ public class PlaidController {
             @JsonProperty("unofficial_currency_code") String unofficialCurrencyCode,
             @JsonProperty("limit") BigDecimal limit
     ) {
+    }
+
+    private static int resolveRecurringLimit(Integer limit) {
+        if (limit == null) {
+            return DEFAULT_RECURRING_STREAMS;
+        }
+        return Math.min(MAX_RECURRING_STREAMS, Math.max(1, limit));
     }
 
     private static String blankToNull(String value) {

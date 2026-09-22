@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { House } from '@lucide/vue'
+import { House, Wallet } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 
 const logoUrl = `${import.meta.env.BASE_URL}logo.svg`
 
-// Home is the only destination for now, so it is always the active one.
-const items = [{ name: 'Home', to: '/', icon: House, active: true }]
+const items = [
+  { name: 'Home', to: '/', icon: House },
+  { name: 'Spending Plan', to: '/spending-plan', icon: Wallet },
+]
 </script>
 
 <template>
@@ -16,12 +18,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 
     <ul class="rail-items">
       <li v-for="item in items" :key="item.name">
-        <RouterLink
-          :to="item.to"
-          class="rail-item"
-          :class="{ 'rail-item-active': item.active }"
-          :aria-current="item.active ? 'page' : undefined"
-        >
+        <RouterLink :to="item.to" class="rail-item" exact-active-class="rail-item-active">
           <span class="rail-indicator" aria-hidden="true" />
           <span class="rail-icon">
             <component :is="item.icon" :size="18" :stroke-width="1.75" aria-hidden="true" />
@@ -63,7 +60,8 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 
 .rail-items {
   display: grid;
-  gap: 0.125rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -72,7 +70,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 .rail-item {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   row-gap: 0.25rem;
   padding: 0 0 0.25rem;
@@ -124,10 +122,13 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 }
 
 .rail-label {
+  min-width: 0;
+  padding: 0 0.25rem;
   font-size: 0.6875rem;
   font-weight: 500;
   line-height: 1.2;
   text-align: center;
+  white-space: nowrap;
 }
 
 .rail-item:focus-visible {
@@ -162,7 +163,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
   }
 
   .rail-item {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 0.25rem auto auto;
     row-gap: 0.25rem;
     min-width: 4rem;
@@ -186,6 +187,7 @@ const items = [{ name: 'Home', to: '/', icon: House, active: true }]
 
   .rail-label {
     grid-column: 1;
+    padding: 0;
   }
 }
 </style>

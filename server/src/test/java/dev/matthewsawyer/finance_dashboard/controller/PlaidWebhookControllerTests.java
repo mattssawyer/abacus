@@ -1,6 +1,7 @@
 package dev.matthewsawyer.finance_dashboard.controller;
 
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
+import dev.matthewsawyer.finance_dashboard.service.PlaidRecurringStreamSyncService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidWebhookVerifier;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +26,9 @@ class PlaidWebhookControllerTests {
     private static final String SYNC_BODY = """
             {"webhook_type":"TRANSACTIONS","webhook_code":"SYNC_UPDATES_AVAILABLE",\
             "item_id":"item-id","environment":"sandbox"}""";
+    private static final String RECURRING_BODY = """
+            {"webhook_type":"RECURRING_TRANSACTIONS","webhook_code":"RECURRING_TRANSACTIONS_UPDATE",\
+            "item_id":"item-id","environment":"sandbox"}""";
 
     @Mock
     private PlaidWebhookVerifier webhookVerifier;
@@ -35,6 +39,9 @@ class PlaidWebhookControllerTests {
     @Mock
     private PlaidTransactionSyncService transactionSyncService;
 
+    @Mock
+    private PlaidRecurringStreamSyncService recurringStreamSyncService;
+
     private PlaidWebhookController controller;
 
     @BeforeEach
@@ -43,6 +50,7 @@ class PlaidWebhookControllerTests {
                 webhookVerifier,
                 plaidItemRepository,
                 transactionSyncService,
+                recurringStreamSyncService,
                 new ObjectMapper()
         );
     }
@@ -55,6 +63,18 @@ class PlaidWebhookControllerTests {
         controller.receiveWebhook(SYNC_BODY, SIGNATURE);
 
         verify(transactionSyncService).syncItemAsync("item-id");
+        verify(recurringStreamSyncService).syncItemAsync("item-id");
+    }
+
+    @Test
+    void syncsRecurringStreamsWhenPlaidReportsAnUpdate() {
+        when(webhookVerifier.isValid(RECURRING_BODY, SIGNATURE)).thenReturn(true);
+        when(plaidItemRepository.existsById("item-id")).thenReturn(true);
+
+        controller.receiveWebhook(RECURRING_BODY, SIGNATURE);
+
+        verify(recurringStreamSyncService).syncItemAsync("item-id");
+        verifyNoInteractions(transactionSyncService);
     }
 
     @Test
@@ -65,7 +85,7 @@ class PlaidWebhookControllerTests {
                 ResponseStatusException.class, () -> controller.receiveWebhook(SYNC_BODY, SIGNATURE));
 
         assertEquals(HttpStatus.UNAUTHORIZED, exception.getStatusCode());
-        verifyNoInteractions(plaidItemRepository, transactionSyncService);
+        verifyNoInteractions(plaidItemRepository, transactionSyncService, recurringStreamSyncService);
     }
 
     @Test
@@ -75,7 +95,7 @@ class PlaidWebhookControllerTests {
 
         controller.receiveWebhook(SYNC_BODY, SIGNATURE);
 
-        verifyNoInteractions(transactionSyncService);
+        verifyNoInteractions(transactionSyncService, recurringStreamSyncService);
     }
 
     @Test
@@ -86,7 +106,7 @@ class PlaidWebhookControllerTests {
 
         controller.receiveWebhook(body, SIGNATURE);
 
-        verifyNoInteractions(plaidItemRepository, transactionSyncService);
+        verifyNoInteractions(plaidItemRepository, transactionSyncService, recurringStreamSyncService);
     }
 
     @Test
@@ -97,7 +117,7 @@ class PlaidWebhookControllerTests {
 
         controller.receiveWebhook(body, SIGNATURE);
 
-        verifyNoInteractions(plaidItemRepository, transactionSyncService);
+        verifyNoInteractions(plaidItemRepository, transactionSyncService, recurringStreamSyncService);
     }
 
     @Test
@@ -108,6 +128,6 @@ class PlaidWebhookControllerTests {
                 ResponseStatusException.class, () -> controller.receiveWebhook("not-json", SIGNATURE));
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        verifyNoInteractions(plaidItemRepository, transactionSyncService);
+        verifyNoInteractions(plaidItemRepository, transactionSyncService, recurringStreamSyncService);
     }
 }

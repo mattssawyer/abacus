@@ -42,6 +42,8 @@ export interface RecurringStream {
   last_date: string | null
   is_inflow: boolean
   category: string | null
+  /** Plaid detailed personal finance category, e.g. RENT_AND_UTILITIES_TELEPHONE. */
+  category_detailed: string | null
 }
 
 export interface CategorySpend {
@@ -99,11 +101,17 @@ export async function getTransactions(limit = 25, accountId?: string): Promise<P
   return data.transactions
 }
 
-export async function getRecurringTransactions(accountId?: string): Promise<RecurringStream[]> {
+export async function getRecurringTransactions(
+  accountId?: string,
+  limit?: number,
+): Promise<RecurringStream[]> {
   const { data } = await apiClient.get<{ streams: RecurringStream[] }>(
     '/plaid/transactions/recurring',
     {
-      params: accountId ? { account_id: accountId } : undefined,
+      params: {
+        ...(accountId ? { account_id: accountId } : {}),
+        ...(limit != null ? { limit } : {}),
+      },
     },
   )
 

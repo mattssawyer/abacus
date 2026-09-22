@@ -1,0 +1,1130 @@
+<script setup lang="ts">
+import { ChevronRight, CircleMinus, Info, Plus } from '@lucide/vue'
+import { computed, onMounted, ref } from 'vue'
+import Button from 'primevue/button'
+import Skeleton from 'primevue/skeleton'
+import { getAccounts, getRecurringTransactions, type PlaidAccount } from '../api/PlaidService'
+import { saveSpendingPlan } from '../api/SpendingPlanService'
+import {
+  DEFAULT_BUFFER_PERCENT,
+  PLAN_TARGETS,
+  defaultPlan,
+  estimateMonthlyTakeHome,
+  formatPlanAmount,
+  lineAmount,
+  parseAmount,
+  planFromRecurring,
+  shareOfIncome,
+  summarizePlan,
+  type BucketId,
+  type PlanDraft,
+  type PlanItemDraft,
+  type PlanLineDraft,
+} from '../spendingPlan/fromRecurring'
+import { fromSaved, toSaveRequest, type SavedPlan } from '../spendingPlan/savedPlan'
+
+const props = defineProps<{
+  /** Edit this saved plan. Without it, the dialog runs a new setup from an account's bills. */
+  saved?: SavedPlan
+  /** A new setup will replace an existing saved plan. */
+  replacing?: boolean
+}>()
+
+const emit = defineEmits<{
+  saved: [plan: SavedPlan]
+}>()
+
+const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
+
+interface PlanItem extends PlanItemDraft {
+  id: string
+}
+
+interface PlanRow extends PlanLineDraft {
+  id: string
+  items: PlanItem[]
+}
+
+type PlanRows = Record<BucketId, PlanRow[]>
+
+interface Bucket {
+  id: BucketId
+  title: string
+  /** What one line in this bucket is called, for placeholders and labels. */
+  lineNoun: string
+  addLabel: string
+  /** Share of plan income above which the total is flagged. */
+  warnAbove?: number
+  /** Whether lines can be marked as taken out of the paycheck. */
+  paycheckOption?: boolean
+  /** Whether the bucket gets the spreadsheet's miscellaneous buffer on top of its lines. */
+  buffer?: boolean
+}
+
+const BUCKETS: Bucket[] = [
+  {
+    id: 'fixedCosts',
+    title: 'Fixed costs',
+    lineNoun: 'Cost',
+    addLabel: 'Add a cost',
+    warnAbove: PLAN_TARGETS.fixedCosts.max,
+    buffer: true,
+  },
+  {
+    id: 'investments',
+    title: 'Investments',
+    lineNoun: 'Investment',
+    addLabel: 'Add an investment',
+    paycheckOption: true,
+  },
+  { id: 'savings', title: 'Savings', lineNoun: 'Savings goal', addLabel: 'Add a savings goal' },
+]
+
+const accounts = ref<PlaidAccount[]>([])
+const selectedAccountId = ref<string>()
+const editing = props.saved != null
+const loadingAccounts = ref(!editing)
+const loadingEstimates = ref(!editing)
+const takeHome = ref<number | null>(null)
+const bufferPercent = ref<number | null>(DEFAULT_BUFFER_PERCENT)
+const plan = ref<PlanRows>({ fixedCosts: [], investments: [], savings: [] })
+const expandedRows = ref(new Set<string>())
+const saving = ref(false)
+const saveError = ref('')
+
+const summary = computed(() => summarizePlan(takeHome.value, plan.value, bufferPercent.value))
+const totals = computed(() => summary.value.totals)
+const fromPaycheck = computed(() => summary.value.fromPaycheck)
+const income = computed(() => summary.value.income)
+const guiltFree = computed(() => summary.value.guiltFree)
+const guiltFreePercent = computed(() =>
+  guiltFree.value == null ? null : shareOfIncome(guiltFree.value, income.value),
+)
+
+if (props.saved) {
+  takeHome.value = props.saved.takeHome
+  bufferPercent.value = props.saved.bufferPercent
+  setPlan(props.saved.plan)
+}
+
+onMounted(async () => {
+  // Editing keeps the account the plan was set up from; changing it means a new setup.
+  if (editing) return
+  await loadAccounts()
+  await loadEstimates()
+})
+
+async function save() {
+  saving.value = true
+  saveError.value = ''
+  try {
+    const accountId = props.saved ? props.saved.accountId : (selectedAccountId.value ?? null)
+    const saved = await saveSpendingPlan(
+      toSaveRequest(accountId, takeHome.value, bufferPercent.value ?? 0, plan.value),
+    )
+    emit('saved', fromSaved(saved))
+  } catch {
+    saveError.value = 'We couldn’t save your plan. Try again.'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function loadAccounts() {
+  loadingAccounts.value = true
+  try {
+    accounts.value = await getAccounts()
+    chooseAccount()
+  } catch {
+    accounts.value = []
+    selectedAccountId.value = undefined
+  } finally {
+    loadingAccounts.value = false
+  }
+}
+
+function chooseAccount() {
+  const stillValid = (accountId: string | undefined) =>
+    Boolean(accountId && accounts.value.some((account) => account.account_id === accountId))
+
+  if (stillValid(selectedAccountId.value)) {
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value as string)
+    return
+  }
+
+  const remembered = localStorage.getItem(ACCOUNT_STORAGE_KEY) ?? undefined
+  selectedAccountId.value = stillValid(remembered)
+    ? remembered
+    : (accounts.value.find((account) => account.type === 'depository') ?? accounts.value[0])
+        ?.account_id
+
+  if (selectedAccountId.value) {
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value)
+  }
+}
+
+function onAccountChange(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLSelectElement)) return
+  const accountId = target.value
+  if (!accountId || accountId === selectedAccountId.value) return
+  if (!accounts.value.some((account) => account.account_id === accountId)) return
+  selectedAccountId.value = accountId
+  localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId)
+  void loadEstimates()
+}
+
+async function loadEstimates() {
+  loadingEstimates.value = true
+  if (!selectedAccountId.value) {
+    takeHome.value = null
+    setPlan(defaultPlan())
+    loadingEstimates.value = false
+    return
+  }
+
+  try {
+    const streams = await getRecurringTransactions(selectedAccountId.value, 50)
+    const estimated = estimateMonthlyTakeHome(streams)
+    takeHome.value = estimated
+    setPlan(planFromRecurring(streams))
+  } catch {
+    takeHome.value = null
+    setPlan(defaultPlan())
+  } finally {
+    loadingEstimates.value = false
+  }
+}
+
+function accountLabel(account: PlaidAccount) {
+  return account.mask ? `${account.name} ••${account.mask}` : account.name
+}
+
+function setPlan(draft: PlanDraft) {
+  plan.value = {
+    fixedCosts: draft.fixedCosts.map(toRow),
+    investments: draft.investments.map(toRow),
+    savings: draft.savings.map(toRow),
+  }
+  expandedRows.value.clear()
+}
+
+function toRow(draft: PlanLineDraft): PlanRow {
+  return {
+    id: crypto.randomUUID(),
+    name: draft.name,
+    amount: draft.amount,
+    items: draft.items.map(toItem),
+    fromPaycheck: draft.fromPaycheck,
+  }
+}
+
+function toItem(draft: PlanItemDraft): PlanItem {
+  return {
+    id: crypto.randomUUID(),
+    name: draft.name,
+    amount: draft.amount,
+    streamId: draft.streamId,
+  }
+}
+
+function onTakeHomeInput(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) return
+  takeHome.value = parseAmount(target.value)
+}
+
+function onNameInput(entry: PlanRow | PlanItem, event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) return
+  entry.name = target.value
+}
+
+function onAmountInput(entry: PlanRow | PlanItem, event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) return
+  entry.amount = parseAmount(target.value)
+}
+
+function addLine(bucket: BucketId) {
+  plan.value[bucket].push(toRow({ name: '', amount: null, items: [], fromPaycheck: false }))
+}
+
+function removeLine(bucket: BucketId, id: string) {
+  plan.value[bucket] = plan.value[bucket].filter((row) => row.id !== id)
+  expandedRows.value.delete(id)
+}
+
+function toggleBreakdown(id: string) {
+  if (!expandedRows.value.delete(id)) expandedRows.value.add(id)
+}
+
+function addItem(row: PlanRow) {
+  // A typed line amount becomes the first item so breaking a line down never changes its total.
+  const carried = row.items.length === 0 && row.amount != null
+  row.items.push(
+    toItem({
+      name: carried ? row.name : '',
+      amount: carried ? row.amount : null,
+      streamId: null,
+    }),
+  )
+  row.amount = null
+}
+
+function removeItem(row: PlanRow, id: string) {
+  const removed = row.items.find((item) => item.id === id)
+  row.items = row.items.filter((item) => item.id !== id)
+  // Removing the last item hands its amount back to the line to edit directly.
+  if (row.items.length === 0) row.amount = removed?.amount ?? null
+}
+
+function breakdownLabel(bucket: Bucket, row: PlanRow) {
+  return `${row.name || bucket.lineNoun} breakdown`
+}
+
+function targetHint(target: { min: number; max: number }) {
+  return target.min === target.max
+    ? `Should be about ${target.min}% of income`
+    : `Should be ${target.min}–${target.max}% of income`
+}
+
+function bucketPercent(bucket: BucketId) {
+  return shareOfIncome(totals.value[bucket], income.value)
+}
+
+function bucketOverTarget(bucket: Bucket) {
+  const percent = bucketPercent(bucket.id)
+  return bucket.warnAbove != null && percent != null && percent > bucket.warnAbove
+}
+
+function onBufferInput(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) return
+  const percent = parseAmount(target.value)
+  if (percent != null && percent > 100) {
+    bufferPercent.value = 100
+    target.value = '100'
+    return
+  }
+  bufferPercent.value = percent
+}
+
+function onFromPaycheckChange(row: PlanRow, event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement)) return
+  row.fromPaycheck = target.checked
+}
+
+function amountValue(amount: number | null) {
+  return amount == null ? '' : String(amount)
+}
+</script>
+
+<template>
+  <div class="plan-setup">
+    <form class="plan-form" aria-label="Spending plan" @submit.prevent>
+      <div v-if="!editing" class="plan-toolbar">
+        <Skeleton v-if="loadingAccounts" width="11rem" height="2rem" />
+        <select
+          v-else-if="accounts.length"
+          class="account-select"
+          aria-label="Account"
+          :value="selectedAccountId"
+          :disabled="loadingEstimates"
+          @change="onAccountChange($event)"
+        >
+          <option v-for="account in accounts" :key="account.account_id" :value="account.account_id">
+            {{ accountLabel(account) }}
+          </option>
+        </select>
+        <p v-if="!loadingAccounts && accounts.length" class="autofill-note">
+          <Info :size="14" :stroke-width="1.75" aria-hidden="true" />
+          Amounts found in this account’s recurring transactions are filled in for you.
+        </p>
+      </div>
+
+      <section class="plan-block" aria-labelledby="plan-section-heading-income">
+        <h2 id="plan-section-heading-income">Income</h2>
+        <div v-if="loadingEstimates" class="sheet-row">
+          <Skeleton width="11rem" height="1rem" />
+          <Skeleton width="6.5rem" height="1.5rem" />
+        </div>
+        <template v-else>
+          <div class="sheet-row">
+            <label class="row-label" for="take-home-income">After taxes and deductions</label>
+            <div class="amount-field">
+              <span aria-hidden="true">$</span>
+              <input
+                id="take-home-income"
+                :value="amountValue(takeHome)"
+                inputmode="decimal"
+                autocomplete="off"
+                @input="onTakeHomeInput"
+              />
+            </div>
+          </div>
+          <template v-if="fromPaycheck > 0">
+            <div class="sheet-row income-addback">
+              <span class="row-label">Investments taken from your paycheck</span>
+              <span class="addback-amount" aria-label="Investments taken from your paycheck">
+                +{{ formatPlanAmount(fromPaycheck) }}
+              </span>
+            </div>
+            <div v-if="income != null" class="sheet-row total-row">
+              <span class="row-label">Plan income</span>
+              <div class="total-amount" aria-label="Plan income">
+                <span>{{ formatPlanAmount(income) }}</span>
+              </div>
+            </div>
+          </template>
+        </template>
+      </section>
+
+      <section
+        v-for="bucket in BUCKETS"
+        :key="bucket.id"
+        class="plan-block"
+        :aria-labelledby="`plan-section-heading-${bucket.id}`"
+      >
+        <div class="block-heading">
+          <h2 :id="`plan-section-heading-${bucket.id}`">{{ bucket.title }}</h2>
+          <p class="block-hint">{{ targetHint(PLAN_TARGETS[bucket.id]) }}</p>
+        </div>
+
+        <template v-if="loadingEstimates">
+          <div v-for="index in 3" :key="index" class="sheet-row">
+            <Skeleton height="1.5rem" />
+            <Skeleton width="6.5rem" height="1.5rem" />
+          </div>
+        </template>
+        <template v-else>
+          <div v-for="row in plan[bucket.id]" :key="row.id" class="cost-line">
+            <div class="sheet-row" :class="{ 'has-paycheck-toggle': bucket.paycheckOption }">
+              <button
+                type="button"
+                class="row-remove"
+                :aria-label="`Remove ${row.name || bucket.lineNoun.toLowerCase()}`"
+                @click="removeLine(bucket.id, row.id)"
+              >
+                <CircleMinus :size="16" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="row-toggle"
+                :class="{ 'row-toggle-open': expandedRows.has(row.id) }"
+                :aria-expanded="expandedRows.has(row.id)"
+                :aria-controls="`breakdown-${row.id}`"
+                :aria-label="`Show ${breakdownLabel(bucket, row)}`"
+                @click="toggleBreakdown(row.id)"
+              >
+                <ChevronRight :size="15" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+              <input
+                class="name-input"
+                :value="row.name"
+                :placeholder="bucket.lineNoun"
+                autocomplete="off"
+                :aria-label="row.name ? `${row.name} name` : `${bucket.lineNoun} name`"
+                @input="onNameInput(row, $event)"
+              />
+              <span v-if="row.items.length" class="item-count">{{ row.items.length }}</span>
+              <div v-if="row.items.length" class="amount-field amount-derived">
+                <span aria-hidden="true">$</span>
+                <span
+                  class="derived-value"
+                  :aria-label="row.name ? `${row.name} amount` : `${bucket.lineNoun} amount`"
+                >
+                  {{ lineAmount(row) }}
+                </span>
+              </div>
+              <div v-else class="amount-field">
+                <span aria-hidden="true">$</span>
+                <input
+                  :value="amountValue(row.amount)"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  :aria-label="row.name ? `${row.name} amount` : `${bucket.lineNoun} amount`"
+                  @input="onAmountInput(row, $event)"
+                />
+              </div>
+              <label
+                v-if="bucket.paycheckOption"
+                class="paycheck-toggle"
+                :class="{ 'paycheck-toggle-on': row.fromPaycheck }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="row.fromPaycheck"
+                  :aria-label="`${row.name || bucket.lineNoun}: from paycheck`"
+                  @change="onFromPaycheckChange(row, $event)"
+                />
+                From paycheck
+              </label>
+            </div>
+
+            <div
+              v-if="expandedRows.has(row.id)"
+              :id="`breakdown-${row.id}`"
+              class="breakdown"
+              role="group"
+              :aria-label="breakdownLabel(bucket, row)"
+            >
+              <div v-for="item in row.items" :key="item.id" class="sheet-row item-row">
+                <button
+                  type="button"
+                  class="row-remove"
+                  :aria-label="`Remove ${item.name || 'item'}`"
+                  @click="removeItem(row, item.id)"
+                >
+                  <CircleMinus :size="15" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+                <input
+                  class="name-input"
+                  :value="item.name"
+                  placeholder="Item"
+                  autocomplete="off"
+                  :aria-label="item.name ? `${item.name} name` : 'Item name'"
+                  @input="onNameInput(item, $event)"
+                />
+                <div class="amount-field">
+                  <span aria-hidden="true">$</span>
+                  <input
+                    :value="amountValue(item.amount)"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    :aria-label="item.name ? `${item.name} amount` : 'Item amount'"
+                    @input="onAmountInput(item, $event)"
+                  />
+                </div>
+              </div>
+              <button type="button" class="add-cost add-item" @click="addItem(row)">
+                <Plus :size="13" :stroke-width="1.75" aria-hidden="true" />
+                Add an item
+              </button>
+            </div>
+          </div>
+
+          <button type="button" class="add-cost add-line" @click="addLine(bucket.id)">
+            <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
+            {{ bucket.addLabel }}
+          </button>
+
+          <div v-if="bucket.buffer" class="sheet-row buffer-row">
+            <label class="row-label" for="fixed-cost-buffer">
+              Miscellaneous buffer
+              <span class="row-hint">For costs you forgot and prices that rise</span>
+            </label>
+            <div class="percent-field">
+              <input
+                id="fixed-cost-buffer"
+                :value="amountValue(bufferPercent)"
+                inputmode="decimal"
+                autocomplete="off"
+                aria-describedby="fixed-cost-buffer-amount"
+                @input="onBufferInput"
+              />
+              <span aria-hidden="true">%</span>
+            </div>
+            <div class="amount-field amount-derived">
+              <span aria-hidden="true">$</span>
+              <span
+                id="fixed-cost-buffer-amount"
+                class="derived-value"
+                aria-label="Miscellaneous buffer amount"
+              >
+                {{ summary.buffer }}
+              </span>
+            </div>
+          </div>
+
+          <div class="sheet-row total-row">
+            <span class="row-label">Total</span>
+            <div class="total-amount" :aria-label="`${bucket.title} total`">
+              <span>{{ formatPlanAmount(totals[bucket.id]) }}</span>
+              <span
+                v-if="bucketPercent(bucket.id) != null"
+                class="total-share"
+                :class="{ 'total-share-over': bucketOverTarget(bucket) }"
+              >
+                {{ bucketPercent(bucket.id) }}%
+              </span>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <section class="plan-block" aria-labelledby="plan-section-heading-guilt-free">
+        <div class="block-heading">
+          <h2 id="plan-section-heading-guilt-free">Guilt-free spending</h2>
+          <p class="block-hint">{{ targetHint(PLAN_TARGETS.guiltFree) }}</p>
+        </div>
+
+        <div v-if="loadingEstimates" class="sheet-row">
+          <Skeleton width="11rem" height="1rem" />
+          <Skeleton width="6.5rem" height="1.5rem" />
+        </div>
+        <p v-else-if="guiltFree == null" class="block-hint guilt-free-empty">
+          Enter your take-home pay to see what’s left to spend.
+        </p>
+        <template v-else>
+          <div class="sheet-row guilt-free-row">
+            <span class="row-label">Left to spend</span>
+            <div
+              class="total-amount"
+              :class="{ 'guilt-free-over': guiltFree < 0 }"
+              aria-label="Guilt-free spending total"
+            >
+              <span>{{ formatPlanAmount(guiltFree) }}</span>
+              <span v-if="guiltFreePercent != null" class="total-share">
+                {{ guiltFreePercent }}%
+              </span>
+            </div>
+          </div>
+          <p v-if="guiltFree < 0" class="guilt-free-warning">
+            Your plan is {{ formatPlanAmount(-guiltFree) }} more than your take-home pay.
+          </p>
+        </template>
+      </section>
+    </form>
+
+    <footer class="plan-footer">
+      <p v-if="saveError" class="save-error" role="alert">{{ saveError }}</p>
+      <p v-else-if="replacing" class="save-note">Saving replaces your current plan.</p>
+      <Button
+        label="Save plan"
+        :loading="saving"
+        :disabled="loadingEstimates || saving"
+        @click="save"
+      />
+    </footer>
+  </div>
+</template>
+
+<style scoped>
+.plan-setup {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.plan-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 0.875rem 2.25rem;
+  border-top: 1px solid var(--app-divider);
+}
+
+.save-error,
+.save-note {
+  margin: 0 auto 0 0;
+  font-size: 0.8125rem;
+}
+
+.save-error {
+  color: var(--app-danger);
+}
+
+.save-note {
+  color: var(--app-text-secondary);
+}
+
+.plan-form {
+  display: grid;
+  --section-gap: 2.25rem;
+
+  align-content: start;
+  flex: 1;
+  gap: var(--section-gap);
+  min-width: 0;
+  min-height: 0;
+  padding: 1.5rem 2.25rem 2rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--app-divider);
+}
+
+.plan-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.autofill-note {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  color: var(--app-text-subdued);
+  font-size: 0.8125rem;
+}
+
+.autofill-note svg {
+  flex: none;
+}
+
+.account-select {
+  min-width: 11rem;
+  max-width: 16rem;
+  appearance: none;
+  padding: 0.375rem 1.75rem 0.375rem 0.625rem;
+  color: var(--app-text);
+  background-color: var(--app-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23737373' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.75' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 0.4rem center;
+  background-repeat: no-repeat;
+  border: 1px solid var(--app-control-border);
+  border-radius: var(--app-radius-chip);
+  box-shadow: var(--app-shadow-xs);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.plan-form {
+  container-type: inline-size;
+  counter-reset: plan-step;
+}
+
+@container (max-width: 45rem) {
+  .has-paycheck-toggle {
+    flex-wrap: wrap;
+  }
+
+  .paycheck-toggle {
+    position: static;
+    flex-basis: 100%;
+    margin: -0.4rem 0 0.2rem 3.25rem;
+    transform: none;
+  }
+}
+
+/* Each section is a numbered step; a bar runs from its bubble down to the next one. */
+.plan-block {
+  --step-size: 1.5rem;
+  --step-gutter: 2.5rem;
+
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+  max-width: calc(34rem + var(--step-gutter));
+  padding-left: var(--step-gutter);
+  counter-increment: plan-step;
+}
+
+.plan-block::before {
+  content: counter(plan-step);
+  position: absolute;
+  top: -0.1rem;
+  left: 0;
+  display: grid;
+  width: var(--step-size);
+  height: var(--step-size);
+  place-items: center;
+  color: var(--app-text-secondary);
+  background: var(--app-inset);
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-block:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--step-size) + 0.25rem);
+  /* Reach past the gap between sections to just above the next bubble. */
+  bottom: calc(0.35rem - var(--section-gap));
+  left: calc(var(--step-size) / 2 - 1px);
+  width: 2px;
+  background: var(--app-inset);
+  border-radius: 1px;
+}
+
+h2 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.plan-block > h2,
+.block-heading {
+  margin-bottom: 0.25rem;
+}
+
+.block-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.block-hint {
+  margin: 0;
+  color: var(--app-text-subdued);
+  font-size: 0.8125rem;
+}
+
+.sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+}
+
+.row-label,
+.name-input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.name-input,
+.amount-field,
+.amount-field input,
+.add-cost {
+  font: inherit;
+  color: inherit;
+}
+
+.name-input {
+  padding: 0.35rem 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+}
+
+.name-input::placeholder {
+  color: var(--app-text-subdued);
+  font-weight: 400;
+}
+
+.name-input:hover,
+.name-input:focus {
+  border-bottom-color: var(--app-control-border);
+  outline: none;
+}
+
+.name-input:focus {
+  border-bottom-color: var(--app-text);
+}
+
+.amount-field {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.15rem;
+  width: 6.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.amount-field:focus-within {
+  border-bottom-color: var(--app-text);
+}
+
+.amount-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  outline: none;
+}
+
+.row-remove {
+  display: grid;
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-left: -0.2rem;
+  place-items: center;
+  color: var(--app-danger);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.row-remove:hover {
+  background: var(--app-danger-surface);
+}
+
+.row-toggle {
+  display: grid;
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-right: -0.25rem;
+  place-items: center;
+  color: var(--app-text-subdued);
+  background: transparent;
+  border: 0;
+  border-radius: var(--app-radius-chip);
+  cursor: pointer;
+}
+
+.row-toggle:hover,
+.row-toggle:focus-visible {
+  color: var(--app-text);
+}
+
+.row-toggle svg {
+  transition: transform 150ms ease;
+}
+
+.row-toggle-open svg {
+  transform: rotate(90deg);
+}
+
+.item-count {
+  flex: none;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  color: var(--app-text-secondary);
+  background: var(--app-inset);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.amount-derived {
+  color: var(--app-text-secondary);
+  border-bottom-style: dashed;
+}
+
+.derived-value {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.breakdown {
+  display: grid;
+  margin: 0 0 0.35rem 3.3rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--app-divider);
+}
+
+.item-row {
+  min-height: 2rem;
+  font-size: 0.875rem;
+}
+
+.item-row .name-input {
+  font-weight: 400;
+}
+
+.add-item {
+  margin: 0.1rem 0 0 1.3rem;
+  font-size: 0.8125rem;
+}
+
+.add-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  margin: 0.15rem 0 0 1.3rem;
+  padding: 0.25rem 0;
+  color: var(--app-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.add-cost:hover {
+  color: var(--app-text);
+}
+
+.buffer-row {
+  margin-top: 0.35rem;
+}
+
+.row-hint {
+  display: block;
+  color: var(--app-text-subdued);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.percent-field {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.15rem;
+  width: 3.25rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.percent-field:focus-within {
+  border-bottom-color: var(--app-text);
+}
+
+.percent-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  outline: none;
+}
+
+.total-row {
+  margin-top: 0.15rem;
+  border-top: 1px solid var(--app-divider);
+}
+
+.total-amount {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.total-share {
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.total-share-over {
+  color: var(--app-danger);
+}
+
+.income-addback {
+  min-height: 2rem;
+  color: var(--app-text-secondary);
+  font-size: 0.875rem;
+}
+
+.income-addback .row-label {
+  font-weight: 400;
+}
+
+.addback-amount {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The toggle hangs outside the row, to the right of the amount, so investment amounts stay in
+ * the same column as every other section. Where there's no room beside the rows it drops onto
+ * its own line under the row instead.
+ */
+.has-paycheck-toggle {
+  position: relative;
+}
+
+.paycheck-toggle {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 1rem);
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--app-text-subdued);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.paycheck-toggle input {
+  margin: 0;
+  accent-color: var(--app-text);
+  cursor: pointer;
+}
+
+.paycheck-toggle-on {
+  color: var(--app-text-secondary);
+}
+
+.guilt-free-row {
+  font-size: 1rem;
+}
+
+.guilt-free-over,
+.guilt-free-over .total-share,
+.guilt-free-warning {
+  color: var(--app-danger);
+}
+
+.guilt-free-empty {
+  padding: 0.35rem 0;
+}
+
+.guilt-free-warning {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 900px) {
+  .plan-footer {
+    padding-inline: 1.5rem;
+  }
+
+  .plan-form {
+    padding: 1.25rem 1.5rem 1.5rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .plan-footer {
+    padding-inline: 1.25rem;
+  }
+
+  .plan-block {
+    --step-gutter: 2.1rem;
+  }
+
+  .plan-form {
+    padding: 1.15rem 1.25rem 1.5rem;
+  }
+
+  .plan-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .account-select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .block-heading {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+
+  .add-cost {
+    margin-left: 0;
+  }
+
+  .breakdown {
+    margin-left: 1.5rem;
+  }
+}
+</style>

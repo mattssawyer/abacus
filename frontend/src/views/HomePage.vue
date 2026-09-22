@@ -21,29 +21,11 @@ import {
   type RecurringStream,
   type SpendingByCategory,
 } from '../api/PlaidService'
+import { categoryLabel, firstPresent, recurringLabel } from '../api/plaidLabels'
 
-const RECENT_TRANSACTION_COUNT = 8
-const RECURRING_STREAM_COUNT = 8
+const RECENT_TRANSACTION_COUNT = 25
+const RECURRING_STREAM_COUNT = 20
 const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
-
-// Plaid's primary personal finance categories, minus the income and transfer ones the
-// server filters out as non-spending.
-const CATEGORY_LABELS: Record<string, string> = {
-  BANK_FEES: 'Bank fees',
-  ENTERTAINMENT: 'Entertainment',
-  FOOD_AND_DRINK: 'Food & drink',
-  GENERAL_MERCHANDISE: 'Shopping',
-  GENERAL_SERVICES: 'Services',
-  GOVERNMENT_AND_NON_PROFIT: 'Government & charity',
-  HOME_IMPROVEMENT: 'Home improvement',
-  LOAN_PAYMENTS: 'Loan payments',
-  MEDICAL: 'Medical',
-  PERSONAL_CARE: 'Personal care',
-  RENT_AND_UTILITIES: 'Rent & utilities',
-  TRANSPORTATION: 'Transportation',
-  TRAVEL: 'Travel',
-  UNCATEGORIZED: 'Uncategorized',
-}
 
 const FREQUENCY_LABELS: Record<string, string> = {
   WEEKLY: 'Weekly',
@@ -195,11 +177,7 @@ function accountLabel(account: PlaidAccount) {
 }
 
 function transactionLabel(transaction: PlaidTransaction) {
-  return transaction.merchant_name ?? transaction.name ?? 'Transaction'
-}
-
-function recurringLabel(stream: RecurringStream) {
-  return stream.merchant_name ?? stream.description ?? 'Recurring'
+  return firstPresent(transaction.merchant_name, transaction.name) ?? 'Transaction'
 }
 
 function frequencyLabel(frequency: string) {
@@ -226,18 +204,6 @@ function formatRecurringAmount(stream: RecurringStream) {
     currency: stream.iso_currency_code ?? 'USD',
     signDisplay: 'exceptZero',
   }).format(-stream.amount)
-}
-
-// Plaid can add primary categories, so fall back to a readable form of whatever it sends.
-function categoryLabel(category: string) {
-  return (
-    CATEGORY_LABELS[category] ??
-    category
-      .toLowerCase()
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ')
-  )
 }
 
 async function loadConnections() {
@@ -336,7 +302,7 @@ async function loadRecurring() {
   loadingRecurring.value = true
   recurringError.value = ''
   try {
-    const streams = await getRecurringTransactions(selectedAccountId.value)
+    const streams = await getRecurringTransactions(selectedAccountId.value, RECURRING_STREAM_COUNT)
     if (!disposed) recurring.value = streams.slice(0, RECURRING_STREAM_COUNT)
   } catch {
     if (!disposed) recurringError.value = 'We couldn’t load your recurring transactions.'
@@ -524,7 +490,7 @@ async function openPlaidLink() {
                 role="status"
                 aria-label="Loading recent transactions"
               >
-                <Skeleton v-for="row in RECENT_TRANSACTION_COUNT" :key="row" height="2.75rem" />
+                <Skeleton v-for="row in 4" :key="row" height="2.75rem" />
               </div>
 
               <div v-else-if="transactionsError" class="account-notice">
@@ -541,7 +507,7 @@ async function openPlaidLink() {
                 No transactions yet. They’ll appear here once your bank sends them.
               </p>
 
-              <ul v-else class="transactions-list">
+              <ul v-else class="transactions-list" tabindex="0">
                 <li
                   v-for="transaction in transactions"
                   :key="transaction.transaction_id"
@@ -590,7 +556,7 @@ async function openPlaidLink() {
                 role="status"
                 aria-label="Loading recurring transactions"
               >
-                <Skeleton v-for="row in RECURRING_STREAM_COUNT" :key="row" height="2.75rem" />
+                <Skeleton v-for="row in 3" :key="row" height="2.75rem" />
               </div>
 
               <div v-else-if="recurringError" class="account-notice">
@@ -607,7 +573,7 @@ async function openPlaidLink() {
                 No recurring transactions found yet.
               </p>
 
-              <ul v-else class="transactions-list">
+              <ul v-else class="transactions-list" tabindex="0">
                 <li v-for="stream in recurring" :key="stream.stream_id" class="transaction-row">
                   <span class="transaction-logo transaction-logo-fallback" aria-hidden="true">
                     {{ recurringLabel(stream).charAt(0) }}
@@ -751,7 +717,7 @@ async function openPlaidLink() {
   flex-direction: column;
   width: 100%;
   min-height: 0;
-  padding: 1.25rem 1.5rem 1.5rem;
+  padding: 1.25rem 1.5rem 1.5rem 0;
 }
 
 .overview-heading {
@@ -822,11 +788,11 @@ h1 {
   padding: 1.125rem 1.25rem 1.25rem;
 }
 
-.transactions-card {
+.transactions-card,
+.recurring-card {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  min-height: 0;
+  flex: none;
 }
 
 .spending-card {
@@ -981,21 +947,40 @@ h1 {
 
 .transactions-list {
   display: grid;
-  flex: 1;
   align-content: start;
-  margin: 0.5rem 0 0;
-  padding: 0;
-  overflow: auto;
+  margin: 1rem 0 0;
+  padding: 0 0.25rem 0.25rem 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(11 11 11 / 28%) transparent;
+}
+
+.transactions-card .transactions-list {
+  max-height: 18rem;
+}
+
+.recurring-card .transactions-list {
+  max-height: 13.5rem;
+}
+
+.transactions-list::-webkit-scrollbar {
+  width: 0.375rem;
+}
+
+.transactions-list::-webkit-scrollbar-thumb {
+  background: rgb(11 11 11 / 28%);
+  border-radius: 999px;
 }
 
 .transaction-row {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  min-height: 2.5rem;
-  padding: 0.4rem 0;
+  gap: 0.75rem;
+  min-height: 3.25rem;
+  padding: 0.875rem 0;
 }
 
 .transaction-row:not(:last-child)::after {
@@ -1028,7 +1013,7 @@ h1 {
 
 .transaction-details {
   display: grid;
-  gap: 0.0625rem;
+  gap: 0.25rem;
   min-width: 0;
 }
 
@@ -1140,9 +1125,11 @@ h1 {
   }
 
   .transactions-card,
+  .recurring-card,
   .spending-card,
   .account-prompt {
     flex: none;
+    overflow: visible;
   }
 
   .page-content {
