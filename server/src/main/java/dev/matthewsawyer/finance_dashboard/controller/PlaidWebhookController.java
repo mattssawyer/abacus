@@ -3,6 +3,7 @@ package dev.matthewsawyer.finance_dashboard.controller;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
+import dev.matthewsawyer.finance_dashboard.service.PlaidRecurringStreamSyncService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
 import dev.matthewsawyer.finance_dashboard.service.PlaidWebhookVerifier;
 import org.slf4j.Logger;
@@ -29,21 +30,26 @@ public class PlaidWebhookController {
 
     private static final String TRANSACTIONS = "TRANSACTIONS";
     private static final String SYNC_UPDATES_AVAILABLE = "SYNC_UPDATES_AVAILABLE";
+    private static final String RECURRING_TRANSACTIONS = "RECURRING_TRANSACTIONS";
+    private static final String RECURRING_TRANSACTIONS_UPDATE = "RECURRING_TRANSACTIONS_UPDATE";
 
     private final PlaidWebhookVerifier webhookVerifier;
     private final PlaidItemRepository plaidItemRepository;
     private final PlaidTransactionSyncService transactionSyncService;
+    private final PlaidRecurringStreamSyncService recurringStreamSyncService;
     private final ObjectMapper objectMapper;
 
     public PlaidWebhookController(
             PlaidWebhookVerifier webhookVerifier,
             PlaidItemRepository plaidItemRepository,
             PlaidTransactionSyncService transactionSyncService,
+            PlaidRecurringStreamSyncService recurringStreamSyncService,
             ObjectMapper objectMapper
     ) {
         this.webhookVerifier = webhookVerifier;
         this.plaidItemRepository = plaidItemRepository;
         this.transactionSyncService = transactionSyncService;
+        this.recurringStreamSyncService = recurringStreamSyncService;
         this.objectMapper = objectMapper;
     }
 
@@ -68,8 +74,12 @@ public class PlaidWebhookController {
                 payload.webhookCode(),
                 payload.itemId());
 
-        if (!TRANSACTIONS.equals(payload.webhookType())
-                || !SYNC_UPDATES_AVAILABLE.equals(payload.webhookCode())) {
+        boolean syncTransactions = TRANSACTIONS.equals(payload.webhookType())
+                && SYNC_UPDATES_AVAILABLE.equals(payload.webhookCode());
+        boolean syncRecurring = RECURRING_TRANSACTIONS.equals(payload.webhookType())
+                && RECURRING_TRANSACTIONS_UPDATE.equals(payload.webhookCode());
+
+        if (!syncTransactions && !syncRecurring) {
             log.info(
                     "Ignoring Plaid webhook {}/{} for item {}",
                     payload.webhookType(),
@@ -80,12 +90,18 @@ public class PlaidWebhookController {
 
         // Answer unknown items with a 200 so Plaid stops retrying a webhook we cannot act on.
         if (payload.itemId() == null || !plaidItemRepository.existsById(payload.itemId())) {
-            log.warn("Ignoring transactions webhook for unknown item {}", payload.itemId());
+            log.warn("Ignoring webhook for unknown item {}", payload.itemId());
             return;
         }
 
-        log.info("Queuing transactions sync for item {}", payload.itemId());
-        transactionSyncService.syncItemAsync(payload.itemId());
+        if (syncTransactions) {
+            log.info("Queuing transactions sync for item {}", payload.itemId());
+            transactionSyncService.syncItemAsync(payload.itemId());
+        }
+        if (syncRecurring || syncTransactions) {
+            log.info("Queuing recurring stream sync for item {}", payload.itemId());
+            recurringStreamSyncService.syncItemAsync(payload.itemId());
+        }
     }
 
     private WebhookPayload parse(String rawBody) {

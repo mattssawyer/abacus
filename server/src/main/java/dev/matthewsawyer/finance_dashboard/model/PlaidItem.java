@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Entity
@@ -23,6 +24,9 @@ public class PlaidItem {
 
     @Column(name = "transactions_cursor", columnDefinition = "TEXT")
     private String transactionsCursor;
+
+    @Column(name = "recurring_synced_at")
+    private Instant recurringSyncedAt;
 
     protected PlaidItem() {
     }
@@ -53,7 +57,15 @@ public class PlaidItem {
         this.encryptedAccessToken = encryptedAccessToken;
     }
 
+    public Instant getRecurringSyncedAt() {
+        return recurringSyncedAt;
+    }
+
     public void updateTransactionsCursor(String transactionsCursor) {
         this.transactionsCursor = transactionsCursor;
+    }
+
+    public void markRecurringSynced(Instant recurringSyncedAt) {
+        this.recurringSyncedAt = recurringSyncedAt;
     }
 }
