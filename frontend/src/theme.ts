@@ -98,5 +98,14 @@ export default definePreset(Aura, {
       horizontal: { margin: '0.25rem 0' },
       content: { background: '{surface.0}' },
     },
+    popover: {
+      root: {
+        background: '{surface.0}',
+        borderColor: 'var(--app-control-border)',
+        borderRadius: 'var(--app-radius-control)',
+        shadow: 'var(--app-shadow-border-sm)',
+      },
+      content: { padding: '0.65rem 0.75rem' },
+    },
   },
 })

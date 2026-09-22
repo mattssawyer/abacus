@@ -1,0 +1,368 @@
+import { describe, expect, it } from 'vitest'
+import type { RecurringStream } from '../api/PlaidService'
+import {
+  PLAN_LINES,
+  type PlanLineDraft,
+  bucketTotal,
+  defaultPlan,
+  estimateMonthlyTakeHome,
+  guiltFreeAmount,
+  lineAmount,
+  parseAmount,
+  paycheckContributions,
+  bufferAmount,
+  summarizePlan,
+  planFromRecurring,
+  planIncome,
+  shareOfIncome,
+  toMonthlyAmount,
+} from './fromRecurring'
+
+function stream(overrides: Partial<RecurringStream>): RecurringStream {
+  return {
+    stream_id: 'stream',
+    account_id: 'checking',
+    merchant_name: 'Payroll',
+    description: 'PAYROLL',
+    amount: -2400,
+    iso_currency_code: 'USD',
+    frequency: 'BIWEEKLY',
+    next_date: '2026-09-25',
+    last_date: '2026-09-11',
+    is_inflow: true,
+    category: 'INCOME',
+    category_detailed: 'INCOME_WAGES',
+    ...overrides,
+  }
+}
+
+describe('toMonthlyAmount', () => {
+  it('normalizes each paycheck cadence to a monthly number', () => {
+    expect(toMonthlyAmount(500, 'WEEKLY')).toBe(2166.67)
+    expect(toMonthlyAmount(-2400, 'BIWEEKLY')).toBe(5200)
+    expect(toMonthlyAmount(2100, 'SEMI_MONTHLY')).toBe(4200)
+    expect(toMonthlyAmount(1450, 'MONTHLY')).toBe(1450)
+    expect(toMonthlyAmount(1200, 'ANNUALLY')).toBe(100)
+    expect(toMonthlyAmount(80, 'UNKNOWN')).toBe(80)
+  })
+})
+
+describe('estimateMonthlyTakeHome', () => {
+  it('sums recurring deposits into monthly take-home', () => {
+    expect(
+      estimateMonthlyTakeHome([
+        stream({ amount: -2400, frequency: 'BIWEEKLY' }),
+        stream({
+          stream_id: 'side',
+          merchant_name: 'Consulting',
+          amount: -400,
+          frequency: 'MONTHLY',
+        }),
+      ]),
+    ).toBe(5600)
+  })
+
+  it('ignores bills and returns null when there are no deposits', () => {
+    expect(
+      estimateMonthlyTakeHome([
+        stream({
+          stream_id: 'rent',
+          merchant_name: 'Landlord',
+          amount: 1450,
+          frequency: 'MONTHLY',
+          is_inflow: false,
+          category: 'RENT_AND_UTILITIES',
+          category_detailed: 'RENT_AND_UTILITIES_RENT',
+        }),
+      ]),
+    ).toBeNull()
+  })
+})
+
+describe('planFromRecurring', () => {
+  function bill(overrides: Partial<RecurringStream>) {
+    return stream({ frequency: 'MONTHLY', is_inflow: false, ...overrides })
+  }
+
+  function amounts(streams: RecurringStream[]) {
+    return Object.fromEntries(
+      planFromRecurring(streams).fixedCosts.map((row) => [row.name, lineAmount(row)]),
+    )
+  }
+
+  it('always lists every spreadsheet line in order', () => {
+    const plan = planFromRecurring([])
+    expect(plan.fixedCosts.map((row) => row.name)).toEqual([...PLAN_LINES.fixedCosts])
+    expect(plan.investments.map((row) => row.name)).toEqual([...PLAN_LINES.investments])
+    expect(plan.savings.map((row) => row.name)).toEqual([...PLAN_LINES.savings])
+    expect(plan).toEqual(defaultPlan())
+  })
+
+  it('fills in monthly amounts for lines that match a recurring bill', () => {
+    expect(
+      amounts([
+        bill({ stream_id: 'rent', amount: 1450, category_detailed: 'RENT_AND_UTILITIES_RENT' }),
+        bill({
+          stream_id: 'phone',
+          amount: 80,
+          category_detailed: 'RENT_AND_UTILITIES_TELEPHONE',
+        }),
+        bill({
+          stream_id: 'insurance',
+          amount: 1200,
+          frequency: 'ANNUALLY',
+          category_detailed: 'GENERAL_SERVICES_INSURANCE',
+        }),
+      ]),
+    ).toMatchObject({
+      'Rent/mortgage': 1450,
+      Phone: 80,
+      Insurance: 100,
+      Utilities: null,
+      Groceries: null,
+    })
+  })
+
+  it('adds up several bills that belong to the same line', () => {
+    expect(
+      amounts([
+        bill({
+          stream_id: 'electric',
+          amount: 90.1,
+          category_detailed: 'RENT_AND_UTILITIES_GAS_AND_ELECTRICITY',
+        }),
+        bill({ stream_id: 'water', amount: 35.2, category_detailed: 'RENT_AND_UTILITIES_WATER' }),
+        bill({
+          stream_id: 'netflix',
+          amount: 15.49,
+          category_detailed: 'ENTERTAINMENT_TV_AND_MOVIES',
+        }),
+        bill({
+          stream_id: 'spotify',
+          amount: 11.99,
+          category_detailed: 'ENTERTAINMENT_MUSIC_AND_AUDIO',
+        }),
+      ]),
+    ).toMatchObject({ Utilities: 125.3, Subscriptions: 27.48 })
+  })
+
+  it('lists each matching bill as a monthly breakdown item', () => {
+    const subscriptions = planFromRecurring([
+      bill({
+        stream_id: 'netflix',
+        merchant_name: 'Netflix',
+        amount: 15.49,
+        category_detailed: 'ENTERTAINMENT_TV_AND_MOVIES',
+      }),
+      bill({
+        stream_id: 'gym',
+        merchant_name: null,
+        description: 'PLANET FITNESS',
+        amount: 120,
+        frequency: 'ANNUALLY',
+        category_detailed: 'PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS',
+      }),
+    ]).fixedCosts.find((row) => row.name === 'Subscriptions')
+
+    expect(subscriptions?.items).toEqual([
+      { name: 'Netflix', amount: 15.49, streamId: 'netflix' },
+      { name: 'PLANET FITNESS', amount: 10, streamId: 'gym' },
+    ])
+  })
+
+  it('names a bill from its category when Plaid sent a blank name', () => {
+    const rent = planFromRecurring([
+      bill({
+        merchant_name: '',
+        description: '   ',
+        amount: 1450,
+        category: 'RENT_AND_UTILITIES',
+        category_detailed: 'RENT_AND_UTILITIES_RENT',
+      }),
+    ]).fixedCosts.find((row) => row.name === 'Rent/mortgage')
+
+    expect(rent?.items).toEqual([{ name: 'Rent & utilities', amount: 1450, streamId: 'stream' }])
+  })
+
+  it('does not add rows for bills that match no line, or for credit card payments', () => {
+    const plan = planFromRecurring([
+      bill({ stream_id: 'doordash', amount: 40, category_detailed: 'FOOD_AND_DRINK_RESTAURANT' }),
+      bill({
+        stream_id: 'card',
+        amount: 900,
+        category_detailed: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
+      }),
+      bill({ stream_id: 'unknown', amount: 20, category_detailed: null }),
+      stream({ amount: -2400 }),
+    ])
+
+    expect(plan).toEqual(defaultPlan())
+  })
+
+  it('puts investment and savings transfers in their buckets', () => {
+    const plan = planFromRecurring([
+      bill({
+        stream_id: 'vanguard',
+        merchant_name: 'Vanguard',
+        amount: 250,
+        frequency: 'BIWEEKLY',
+        category: 'TRANSFER_OUT',
+        category_detailed: 'TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS',
+      }),
+      bill({
+        stream_id: 'hysa',
+        merchant_name: 'Ally',
+        amount: 200,
+        category: 'TRANSFER_OUT',
+        category_detailed: 'TRANSFER_OUT_SAVINGS',
+      }),
+    ])
+
+    expect(plan.investments.find((row) => row.name === 'Other investments')?.items).toEqual([
+      { name: 'Vanguard', amount: 541.67, streamId: 'vanguard' },
+    ])
+    expect(plan.savings.find((row) => row.name === 'Emergency fund')?.items).toEqual([
+      { name: 'Ally', amount: 200, streamId: 'hysa' },
+    ])
+    expect(plan.fixedCosts.every((row) => row.items.length === 0)).toBe(true)
+  })
+})
+
+function line(overrides: Partial<PlanLineDraft>): PlanLineDraft {
+  return { name: 'Line', amount: null, items: [], fromPaycheck: false, ...overrides }
+}
+
+describe('lineAmount', () => {
+  it('uses the typed amount until the line is broken down', () => {
+    expect(lineAmount(line({ name: 'Rent', amount: 1450 }))).toBe(1450)
+    expect(lineAmount(line({ name: 'Rent', amount: null }))).toBeNull()
+  })
+
+  it('sums breakdown items, counting blank ones as zero', () => {
+    expect(
+      lineAmount(
+        line({
+          name: 'Subscriptions',
+          amount: 99,
+          items: [
+            { name: 'Netflix', amount: 15.49, streamId: null },
+            { name: 'Spotify', amount: 11.99, streamId: null },
+            { name: '', amount: null, streamId: null },
+          ],
+        }),
+      ),
+    ).toBe(27.48)
+  })
+})
+
+describe('parseAmount', () => {
+  it('reads typed currency and treats a blank field as empty', () => {
+    expect(parseAmount('1,800.50')).toBe(1800.5)
+    expect(parseAmount('$80')).toBe(80)
+    expect(parseAmount('')).toBeNull()
+  })
+})
+
+describe('shareOfIncome', () => {
+  it('returns the percent of take-home, or nothing without income', () => {
+    expect(shareOfIncome(1800, 3600)).toBe(50)
+    expect(shareOfIncome(1800, null)).toBeNull()
+  })
+})
+
+describe('bucketTotal', () => {
+  it('adds typed amounts and broken-down lines, skipping blanks', () => {
+    expect(
+      bucketTotal([
+        line({ name: '401(k)', amount: 500 }),
+        line({ name: 'Roth IRA', amount: null }),
+        line({
+          name: 'Other investments',
+          items: [
+            { name: 'Vanguard', amount: 100.1, streamId: null },
+            { name: 'Fidelity', amount: 50.2, streamId: null },
+          ],
+        }),
+      ]),
+    ).toBe(650.3)
+  })
+})
+
+describe('paycheck contributions', () => {
+  it('starts with only the 401(k) marked as taken from the paycheck', () => {
+    const plan = defaultPlan()
+    expect(plan.investments.filter((row) => row.fromPaycheck).map((row) => row.name)).toEqual([
+      '401(k)',
+    ])
+    expect([...plan.fixedCosts, ...plan.savings].some((row) => row.fromPaycheck)).toBe(false)
+  })
+
+  it('adds up only the lines taken from the paycheck', () => {
+    expect(
+      paycheckContributions([
+        line({ name: '401(k)', amount: 500, fromPaycheck: true }),
+        line({
+          name: 'HSA',
+          fromPaycheck: true,
+          items: [{ name: 'Employer HSA', amount: 100, streamId: null }],
+        }),
+        line({ name: 'Roth IRA', amount: 583, fromPaycheck: false }),
+      ]),
+    ).toBe(600)
+  })
+
+  it('adds paycheck contributions back onto take-home pay for the income base', () => {
+    expect(planIncome(5200, 500)).toBe(5700)
+    expect(planIncome(5200, 0)).toBe(5200)
+    expect(planIncome(null, 500)).toBeNull()
+  })
+
+  it('counts a paycheck 401(k) toward investments without shrinking guilt-free spending', () => {
+    const takeHome = 5200
+    const buckets = { fixedCosts: 2800, investments: 500, savings: 300 }
+    const income = planIncome(takeHome, 500)
+
+    expect(
+      guiltFreeAmount(income, buckets.fixedCosts + buckets.investments + buckets.savings),
+    ).toBe(takeHome - buckets.fixedCosts - buckets.savings)
+    expect(shareOfIncome(buckets.investments, income)).toBe(9)
+  })
+})
+
+describe('miscellaneous buffer', () => {
+  it('is a percent of fixed costs, rounded to cents, and nothing when blank', () => {
+    expect(bufferAmount(1477.48, 15)).toBe(221.62)
+    expect(bufferAmount(1450, 0)).toBe(0)
+    expect(bufferAmount(1450, null)).toBe(0)
+  })
+
+  it('counts toward fixed costs, and so comes out of guilt-free spending', () => {
+    const plan = defaultPlan()
+    plan.fixedCosts[0] = { ...plan.fixedCosts[0]!, amount: 2000 }
+
+    const summary = summarizePlan(5000, plan, 15)
+
+    expect(summary.fixedCostSubtotal).toBe(2000)
+    expect(summary.buffer).toBe(300)
+    expect(summary.totals.fixedCosts).toBe(2300)
+    expect(summary.guiltFree).toBe(2700)
+  })
+
+  it('defaults to the spreadsheet 15 percent', () => {
+    const plan = defaultPlan()
+    plan.fixedCosts[0] = { ...plan.fixedCosts[0]!, amount: 1000 }
+
+    expect(summarizePlan(4000, plan).buffer).toBe(150)
+  })
+})
+
+describe('guiltFreeAmount', () => {
+  it('is what the income base leaves after the other buckets', () => {
+    expect(guiltFreeAmount(5000, 3900.5)).toBe(1099.5)
+    expect(guiltFreeAmount(3000, 3400)).toBe(-400)
+  })
+
+  it('is unknown until take-home pay is entered', () => {
+    expect(guiltFreeAmount(null, 1200)).toBeNull()
+  })
+})

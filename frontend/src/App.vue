@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useAuth } from '@clerk/vue'
-import HomePage from './views/HomePage.vue'
+import { RouterView } from 'vue-router'
 import SignInPage from './views/SignInPage.vue'
 import { setAccessTokenProvider } from './api/client'
 
@@ -12,7 +12,7 @@ setAccessTokenProvider(async () => (await getToken.value()) ?? null)
 <template>
   <template v-if="isLoaded">
     <SignInPage v-if="!isSignedIn" />
-    <HomePage v-else />
+    <RouterView v-else />
   </template>
   <main v-else class="session-loading" role="status" aria-live="polite">Loading…</main>
 </template>
