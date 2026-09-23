@@ -3,7 +3,8 @@ import { ChevronRight, CircleMinus, Info, Plus } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import Skeleton from 'primevue/skeleton'
-import { getAccounts, getRecurringTransactions, type PlaidAccount } from '../api/PlaidService'
+import { getRecurringTransactions } from '../api/PlaidService'
+import { accountLabel, useSelectedAccount } from '../accounts/useSelectedAccount'
 import { saveSpendingPlan } from '../api/SpendingPlanService'
 import {
   DEFAULT_BUFFER_PERCENT,
@@ -33,8 +34,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   saved: [plan: SavedPlan]
 }>()
-
-const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
 
 interface PlanItem extends PlanItemDraft {
   id: string
@@ -80,10 +79,14 @@ const BUCKETS: Bucket[] = [
   { id: 'savings', title: 'Savings', lineNoun: 'Savings goal', addLabel: 'Add a savings goal' },
 ]
 
-const accounts = ref<PlaidAccount[]>([])
-const selectedAccountId = ref<string>()
+const {
+  accounts,
+  selectedAccountId,
+  loading: loadingAccounts,
+  load: loadAccounts,
+  select: selectAccount,
+} = useSelectedAccount()
 const editing = props.saved != null
-const loadingAccounts = ref(!editing)
 const loadingEstimates = ref(!editing)
 const takeHome = ref<number | null>(null)
 const bufferPercent = ref<number | null>(DEFAULT_BUFFER_PERCENT)
@@ -130,47 +133,10 @@ async function save() {
   }
 }
 
-async function loadAccounts() {
-  loadingAccounts.value = true
-  try {
-    accounts.value = await getAccounts()
-    chooseAccount()
-  } catch {
-    accounts.value = []
-    selectedAccountId.value = undefined
-  } finally {
-    loadingAccounts.value = false
-  }
-}
-
-function chooseAccount() {
-  const stillValid = (accountId: string | undefined) =>
-    Boolean(accountId && accounts.value.some((account) => account.account_id === accountId))
-
-  if (stillValid(selectedAccountId.value)) {
-    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value as string)
-    return
-  }
-
-  const remembered = localStorage.getItem(ACCOUNT_STORAGE_KEY) ?? undefined
-  selectedAccountId.value = stillValid(remembered)
-    ? remembered
-    : (accounts.value.find((account) => account.type === 'depository') ?? accounts.value[0])
-        ?.account_id
-
-  if (selectedAccountId.value) {
-    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value)
-  }
-}
-
 function onAccountChange(event: Event) {
   const target = event.target
   if (!(target instanceof HTMLSelectElement)) return
-  const accountId = target.value
-  if (!accountId || accountId === selectedAccountId.value) return
-  if (!accounts.value.some((account) => account.account_id === accountId)) return
-  selectedAccountId.value = accountId
-  localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId)
+  if (!selectAccount(target.value)) return
   void loadEstimates()
 }
 
@@ -194,10 +160,6 @@ async function loadEstimates() {
   } finally {
     loadingEstimates.value = false
   }
-}
-
-function accountLabel(account: PlaidAccount) {
-  return account.mask ? `${account.name} ••${account.mask}` : account.name
 }
 
 function setPlan(draft: PlanDraft) {
