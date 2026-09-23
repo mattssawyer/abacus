@@ -1,7 +1,7 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.stubbing.Answer;
@@ -45,7 +45,7 @@ class PlaidItemSyncLockTests {
 
         ExecutorService executor = Executors.newFixedThreadPool(4);
         PlaidItemSync itemSync = new PlaidItemSync(
-                items, transactionsSync, recurringStreamsSync, mock(PlanPartSorting.class), executor);
+                items, transactionsSync, recurringStreamsSync, mock(BucketSorting.class), executor);
 
         for (int i = 0; i < 4; i++) {
             itemSync.notified("item-id", "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE");

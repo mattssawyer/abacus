@@ -5,16 +5,17 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -43,15 +44,15 @@ public class PlaidController {
     private static final int DEFAULT_RECURRING_STREAMS = 8;
     private static final int MAX_RECURRING_STREAMS = 50;
 
-    /** Transactions plan part sorting hasn't reached yet. */
+    /** Transactions sorting hasn't reached yet. */
     static final String UNSORTED = "UNSORTED";
 
-    // The order parts are listed in, following the plan. NOT_COUNTED is left out of spending.
-    private static final List<String> PART_ORDER = List.of(
-            PlanPart.FIXED_COSTS.name(),
-            PlanPart.GUILT_FREE.name(),
-            PlanPart.SAVINGS.name(),
-            PlanPart.INVESTMENTS.name(),
+    // The order buckets are listed in, following the plan. NOT_COUNTED is left out of spending.
+    private static final List<String> BUCKET_ORDER = List.of(
+            Bucket.FIXED_COSTS.name(),
+            Bucket.GUILT_FREE.name(),
+            Bucket.SAVINGS.name(),
+            Bucket.INVESTMENTS.name(),
             UNSORTED);
 
     private final PlaidItemLinking itemLinking;
@@ -111,24 +112,27 @@ public class PlaidController {
     }
 
     @GetMapping("/transactions")
-    public Map<String, List<TransactionResponse>> getTransactions(
+    public TransactionsResponse getTransactions(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam(defaultValue = "25") int limit,
+            @RequestParam(defaultValue = "0") int page,
             @RequestParam(name = "account_id", required = false) String accountId
     ) {
         if (limit < 1 || limit > MAX_TRANSACTION_LIMIT) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "limit must be between 1 and " + MAX_TRANSACTION_LIMIT);
         }
+        if (page < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must not be negative");
+        }
 
         User user = userService.getOrCreateUser(jwt);
-        List<TransactionResponse> transactions = transactionRepository
-                .findRecent(user.getId(), blankToNull(accountId), Pageable.ofSize(limit))
-                .stream()
-                .map(TransactionResponse::from)
-                .toList();
+        Page<PlaidTransaction> found = transactionRepository
+                .findRecent(user.getId(), blankToNull(accountId), PageRequest.of(page, limit));
 
-        return Map.of("transactions", transactions);
+        return new TransactionsResponse(
+                found.stream().map(TransactionResponse::from).toList(),
+                found.getTotalElements());
     }
 
     @GetMapping("/transactions/recurring")
@@ -191,6 +195,13 @@ public class PlaidController {
         }
     }
 
+    /** One page of transactions, newest first, with how many there are across all pages. */
+    public record TransactionsResponse(
+            @JsonProperty("transactions") List<TransactionResponse> transactions,
+            @JsonProperty("total") long total
+    ) {
+    }
+
     public record TransactionResponse(
             @JsonProperty("transaction_id") String transactionId,
             @JsonProperty("account_id") String accountId,
@@ -201,7 +212,9 @@ public class PlaidController {
             @JsonProperty("merchant_name") String merchantName,
             @JsonProperty("logo_url") String logoUrl,
             @JsonProperty("pending") boolean pending,
-            @JsonProperty("category") String category
+            @JsonProperty("category") String category,
+            /** Null until sorting reaches the transaction. */
+            @JsonProperty("bucket") Bucket bucket
     ) {
         static TransactionResponse from(PlaidTransaction transaction) {
             return new TransactionResponse(
@@ -214,13 +227,14 @@ public class PlaidController {
                     transaction.getMerchantName(),
                     transaction.getLogoUrl(),
                     transaction.isPending(),
-                    transaction.getPersonalFinanceCategoryPrimary()
+                    transaction.getPersonalFinanceCategoryPrimary(),
+                    transaction.getBucket()
             );
         }
     }
 
-    @GetMapping("/spending/by-plan-part")
-    public SpendingByPlanPartResponse getSpendingByPlanPart(
+    @GetMapping("/spending/by-bucket")
+    public SpendingByBucketResponse getSpendingByBucket(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam(name = "account_id", required = false) String accountId
     ) {
@@ -229,46 +243,46 @@ public class PlaidController {
         LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
 
         // Newest first from the query, and kept in that order within each category.
-        Map<String, Map<String, List<PlaidTransaction>>> byPartAndCategory = new HashMap<>();
+        Map<String, Map<String, List<PlaidTransaction>>> byBucketAndCategory = new HashMap<>();
         for (PlaidTransaction transaction : transactionRepository.findSpending(
-                user.getId(), start, end, blankToNull(accountId), PlanPartSorting.NOT_PLAN_MONEY)) {
-            String part = transaction.getPlanPart() == null ? UNSORTED : transaction.getPlanPart().name();
+                user.getId(), start, end, blankToNull(accountId), BucketSorting.NOT_PLAN_MONEY)) {
+            String bucket = transaction.getBucket() == null ? UNSORTED : transaction.getBucket().name();
             // Plaid always assigns a category, but the column is nullable.
             String category = Objects.requireNonNullElse(
                     transaction.getPersonalFinanceCategoryPrimary(), "UNCATEGORIZED");
-            byPartAndCategory
-                    .computeIfAbsent(part, key -> new HashMap<>())
+            byBucketAndCategory
+                    .computeIfAbsent(bucket, key -> new HashMap<>())
                     .computeIfAbsent(category, key -> new ArrayList<>())
                     .add(transaction);
         }
 
-        List<PartSpend> parts = PART_ORDER.stream()
-                .filter(byPartAndCategory::containsKey)
-                .map(part -> PartSpend.of(part, byPartAndCategory.get(part)))
-                .filter(part -> !part.categories().isEmpty())
+        List<BucketSpend> buckets = BUCKET_ORDER.stream()
+                .filter(byBucketAndCategory::containsKey)
+                .map(bucket -> BucketSpend.of(bucket, byBucketAndCategory.get(bucket)))
+                .filter(bucket -> !bucket.categories().isEmpty())
                 .toList();
-        BigDecimal total = parts.stream()
-                .map(PartSpend::amount)
+        BigDecimal total = buckets.stream()
+                .map(BucketSpend::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        return new SpendingByPlanPartResponse(start, end, total, parts);
+        return new SpendingByBucketResponse(start, end, total, buckets);
     }
 
-    public record SpendingByPlanPartResponse(
+    public record SpendingByBucketResponse(
             @JsonProperty("start") LocalDate start,
             @JsonProperty("end") LocalDate end,
             @JsonProperty("total") BigDecimal total,
-            @JsonProperty("parts") List<PartSpend> parts
+            @JsonProperty("buckets") List<BucketSpend> buckets
     ) {
     }
 
-    /** A plan part's total, broken down by Plaid primary category, largest first. */
-    public record PartSpend(
-            @JsonProperty("part") String part,
+    /** A bucket's total, broken down by Plaid primary category, largest first. */
+    public record BucketSpend(
+            @JsonProperty("bucket") String bucket,
             @JsonProperty("amount") BigDecimal amount,
             @JsonProperty("categories") List<CategorySpend> categories
     ) {
-        static PartSpend of(String part, Map<String, List<PlaidTransaction>> transactionsByCategory) {
+        static BucketSpend of(String bucket, Map<String, List<PlaidTransaction>> transactionsByCategory) {
             List<CategorySpend> largestFirst = transactionsByCategory.entrySet().stream()
                     .map(entry -> CategorySpend.of(entry.getKey(), entry.getValue()))
                     // Refunds can net a category to zero or below, which a pie chart cannot show.
@@ -278,7 +292,7 @@ public class PlaidController {
             BigDecimal amount = largestFirst.stream()
                     .map(CategorySpend::amount)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            return new PartSpend(part, amount, largestFirst);
+            return new BucketSpend(bucket, amount, largestFirst);
         }
     }
 

@@ -19,26 +19,26 @@ public class AsyncConfig {
     }
 
     /**
-     * Runs plan part sorting jobs. One thread, so jobs never overlap and a later job always
+     * Runs sorting jobs. One thread, so jobs never overlap and a later job always
      * stores its answers after an earlier one's.
      */
-    @Bean("planPartJobExecutor")
-    ThreadPoolTaskExecutor planPartJobExecutor() {
+    @Bean("sortingJobExecutor")
+    ThreadPoolTaskExecutor sortingJobExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(1);
         executor.setMaxPoolSize(1);
         executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("plan-part-job-");
+        executor.setThreadNamePrefix("sorting-job-");
         return executor;
     }
 
     /** Asks TypeSafe about several transactions at once while a sorting job runs. */
-    @Bean("planPartClassifyExecutor")
-    ThreadPoolTaskExecutor planPartClassifyExecutor() {
+    @Bean("sortingClassifyExecutor")
+    ThreadPoolTaskExecutor sortingClassifyExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(8);
         executor.setMaxPoolSize(8);
-        executor.setThreadNamePrefix("plan-part-classify-");
+        executor.setThreadNamePrefix("sorting-classify-");
         return executor;
     }
 }

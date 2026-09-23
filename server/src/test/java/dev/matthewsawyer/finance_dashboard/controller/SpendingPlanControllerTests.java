@@ -8,8 +8,8 @@ import dev.matthewsawyer.finance_dashboard.model.SpendingPlan;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanBucket;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanLine;
 import dev.matthewsawyer.finance_dashboard.model.User;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanLines;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.PlanLines;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.service.SpendingPlanService;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
@@ -55,7 +55,7 @@ class SpendingPlanControllerTests {
     private PlaidAccountRepository accountRepository;
 
     @Mock
-    private PlanPartSorting planPartSorting;
+    private BucketSorting bucketSorting;
 
     @Mock
     private UserService userService;
@@ -65,7 +65,7 @@ class SpendingPlanControllerTests {
 
     @BeforeEach
     void setUp() {
-        controller = new SpendingPlanController(planService, accountRepository, planPartSorting, userService);
+        controller = new SpendingPlanController(planService, accountRepository, bucketSorting, userService);
         jwt = Jwt.withTokenValue("token").header("alg", "none").subject("user_123").build();
         User user = new User("user_123");
         ReflectionTestUtils.setField(user, "id", USER_ID);
@@ -149,7 +149,7 @@ class SpendingPlanControllerTests {
 
         controller.saveSpendingPlan(jwt, new SpendingPlanRequest(null, null, null, List.of()));
 
-        verify(planPartSorting).planSaved(USER_ID, linesBefore);
+        verify(bucketSorting).planSaved(USER_ID, linesBefore);
     }
 
     @Test

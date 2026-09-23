@@ -1,6 +1,6 @@
 package dev.matthewsawyer.finance_dashboard.model;
 
-/** The Conscious Spending Plan buckets that hold lines. Guilt-free spending is derived, not stored. */
+/** The buckets that hold lines. Guilt-free spending is the fourth bucket: what's left, not stored. */
 public enum SpendingPlanBucket {
     FIXED_COSTS,
     INVESTMENTS,

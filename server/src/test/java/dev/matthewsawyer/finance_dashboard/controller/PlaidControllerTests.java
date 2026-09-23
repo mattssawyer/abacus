@@ -4,7 +4,7 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
@@ -18,6 +18,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -34,6 +37,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -167,32 +171,53 @@ class PlaidControllerTests {
                 .name("COFFEE SHOP")
                 .isoCurrencyCode("USD")
                 .personalFinanceCategory("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE");
+        ReflectionTestUtils.setField(stored, "bucket", Bucket.GUILT_FREE);
 
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(transactionRepository.findRecent(USER_ID, null, Pageable.ofSize(5)))
-                .thenReturn(List.of(stored));
+                .thenReturn(new PageImpl<>(List.of(stored), Pageable.ofSize(5), 1));
 
-        List<PlaidController.TransactionResponse> result =
-                controller.getTransactions(jwt, 5, null).get("transactions");
+        PlaidController.TransactionsResponse response = controller.getTransactions(jwt, 5, 0, null);
+        List<PlaidController.TransactionResponse> result = response.transactions();
 
+        assertEquals(1, response.total());
         assertEquals(1, result.size());
         assertEquals("txn-1", result.get(0).transactionId());
         assertEquals("Coffee Shop", result.get(0).merchantName());
         assertEquals(LocalDate.of(2026, 9, 1), result.get(0).date());
         assertEquals("FOOD_AND_DRINK", result.get(0).category());
+        assertEquals(Bucket.GUILT_FREE, result.get(0).bucket());
     }
 
     @Test
-    void totalsSpendingByPlanPartForTheCurrentMonth() {
+    void pagesThroughTransactionsWithTheTotalAcrossPages() {
+        PlaidTransaction stored = new PlaidTransaction(
+                "txn-51", "item-id", USER_ID, "account-1",
+                new BigDecimal("8.00"), LocalDate.of(2026, 8, 2));
+        PageRequest secondPage = PageRequest.of(1, 50);
+
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.findRecent(USER_ID, null, secondPage))
+                .thenReturn(new PageImpl<>(List.of(stored), secondPage, 51));
+
+        PlaidController.TransactionsResponse response = controller.getTransactions(jwt, 50, 1, null);
+
+        assertEquals(51, response.total());
+        assertEquals("txn-51", response.transactions().get(0).transactionId());
+        assertNull(response.transactions().get(0).bucket());
+    }
+
+    @Test
+    void totalsSpendingByBucketForTheCurrentMonth() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
-                        spent("coffee", "12.50", "FOOD_AND_DRINK", PlanPart.GUILT_FREE),
-                        spent("groceries", "82.50", "FOOD_AND_DRINK", PlanPart.FIXED_COSTS),
-                        spent("rent", "1450.00", "RENT_AND_UTILITIES", PlanPart.FIXED_COSTS),
-                        spent("to-savings", "300.00", "TRANSFER_OUT", PlanPart.SAVINGS)));
+                        spent("coffee", "12.50", "FOOD_AND_DRINK", Bucket.GUILT_FREE),
+                        spent("groceries", "82.50", "FOOD_AND_DRINK", Bucket.FIXED_COSTS),
+                        spent("rent", "1450.00", "RENT_AND_UTILITIES", Bucket.FIXED_COSTS),
+                        spent("to-savings", "300.00", "TRANSFER_OUT", Bucket.SAVINGS)));
 
-        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+        PlaidController.SpendingByBucketResponse result = controller.getSpendingByBucket(jwt, null);
 
         LocalDate expectedStart = LocalDate.now().withDayOfMonth(1);
         assertEquals(expectedStart, result.start());
@@ -200,9 +225,9 @@ class PlaidControllerTests {
         assertEquals(new BigDecimal("1845.00"), result.total());
         assertEquals(
                 List.of("FIXED_COSTS", "GUILT_FREE", "SAVINGS"),
-                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+                result.buckets().stream().map(PlaidController.BucketSpend::bucket).toList());
 
-        PlaidController.PartSpend fixedCosts = result.parts().get(0);
+        PlaidController.BucketSpend fixedCosts = result.buckets().get(0);
         assertEquals(new BigDecimal("1532.50"), fixedCosts.amount());
         assertEquals(
                 List.of("RENT_AND_UTILITIES", "FOOD_AND_DRINK"),
@@ -214,12 +239,12 @@ class PlaidControllerTests {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
-                        spent("coffee-2", "5.00", "FOOD_AND_DRINK", PlanPart.GUILT_FREE),
-                        spent("coffee-1", "7.50", "FOOD_AND_DRINK", PlanPart.GUILT_FREE)));
+                        spent("coffee-2", "5.00", "FOOD_AND_DRINK", Bucket.GUILT_FREE),
+                        spent("coffee-1", "7.50", "FOOD_AND_DRINK", Bucket.GUILT_FREE)));
 
-        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+        PlaidController.SpendingByBucketResponse result = controller.getSpendingByBucket(jwt, null);
 
-        PlaidController.CategorySpend food = result.parts().get(0).categories().get(0);
+        PlaidController.CategorySpend food = result.buckets().get(0).categories().get(0);
         assertEquals(new BigDecimal("12.50"), food.amount());
         assertEquals(
                 List.of("coffee-2", "coffee-1"),
@@ -232,13 +257,13 @@ class PlaidControllerTests {
         when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
                         spent("flight", "400.00", "TRAVEL", null),
-                        spent("brokerage", "500.00", "TRANSFER_OUT", PlanPart.INVESTMENTS)));
+                        spent("brokerage", "500.00", "TRANSFER_OUT", Bucket.INVESTMENTS)));
 
-        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+        PlaidController.SpendingByBucketResponse result = controller.getSpendingByBucket(jwt, null);
 
         assertEquals(
                 List.of("INVESTMENTS", "UNSORTED"),
-                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+                result.buckets().stream().map(PlaidController.BucketSpend::bucket).toList());
     }
 
     @Test
@@ -247,7 +272,7 @@ class PlaidControllerTests {
         when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of());
 
-        controller.getSpendingByPlanPart(jwt, null);
+        controller.getSpendingByBucket(jwt, null);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<String>> excludedCaptor = ArgumentCaptor.forClass(Collection.class);
@@ -264,34 +289,43 @@ class PlaidControllerTests {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
-                        spent("jacket", "25.00", "GENERAL_MERCHANDISE", PlanPart.GUILT_FREE),
-                        spent("jacket-refund", "-25.00", "GENERAL_MERCHANDISE", PlanPart.GUILT_FREE),
-                        spent("pharmacy-refund", "-8.00", "MEDICAL", PlanPart.FIXED_COSTS),
-                        spent("hotel", "300.00", "TRAVEL", PlanPart.GUILT_FREE)));
+                        spent("jacket", "25.00", "GENERAL_MERCHANDISE", Bucket.GUILT_FREE),
+                        spent("jacket-refund", "-25.00", "GENERAL_MERCHANDISE", Bucket.GUILT_FREE),
+                        spent("pharmacy-refund", "-8.00", "MEDICAL", Bucket.FIXED_COSTS),
+                        spent("hotel", "300.00", "TRAVEL", Bucket.GUILT_FREE)));
 
-        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+        PlaidController.SpendingByBucketResponse result = controller.getSpendingByBucket(jwt, null);
 
         assertEquals(
                 List.of("GUILT_FREE"),
-                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+                result.buckets().stream().map(PlaidController.BucketSpend::bucket).toList());
         assertEquals(
                 List.of("TRAVEL"),
-                result.parts().get(0).categories().stream().map(PlaidController.CategorySpend::category).toList());
+                result.buckets().get(0).categories().stream().map(PlaidController.CategorySpend::category).toList());
         assertEquals(new BigDecimal("300.00"), result.total());
     }
 
-    private static PlaidTransaction spent(String id, String amount, String category, PlanPart part) {
+    private static PlaidTransaction spent(String id, String amount, String category, Bucket bucket) {
         PlaidTransaction transaction = new PlaidTransaction(
                 id, "item-id", USER_ID, "checking", new BigDecimal(amount), LocalDate.now())
                 .personalFinanceCategory(category, null);
-        ReflectionTestUtils.setField(transaction, "planPart", part);
+        ReflectionTestUtils.setField(transaction, "bucket", bucket);
         return transaction;
     }
 
     @Test
     void rejectsOutOfRangeTransactionLimit() {
         ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class, () -> controller.getTransactions(jwt, 101, null));
+                ResponseStatusException.class, () -> controller.getTransactions(jwt, 101, 0, null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
+        verifyNoInteractions(userService, transactionRepository);
+    }
+
+    @Test
+    void rejectsNegativeTransactionPage() {
+        ResponseStatusException exception = assertThrows(
+                ResponseStatusException.class, () -> controller.getTransactions(jwt, 25, -1, null));
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
         verifyNoInteractions(userService, transactionRepository);
@@ -301,9 +335,9 @@ class PlaidControllerTests {
     void filtersRecentTransactionsToTheRequestedAccount() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(transactionRepository.findRecent(USER_ID, "account-1", Pageable.ofSize(5)))
-                .thenReturn(List.of());
+                .thenReturn(Page.empty());
 
-        controller.getTransactions(jwt, 5, "account-1");
+        controller.getTransactions(jwt, 5, 0, "account-1");
 
         verify(transactionRepository).findRecent(USER_ID, "account-1", Pageable.ofSize(5));
     }
@@ -399,7 +433,7 @@ class PlaidControllerTests {
                 eq(USER_ID), any(), any(), eq("account-1"), anyCollection()))
                 .thenReturn(List.of());
 
-        controller.getSpendingByPlanPart(jwt, "account-1");
+        controller.getSpendingByBucket(jwt, "account-1");
 
         verify(transactionRepository).findSpending(
                 eq(USER_ID), any(), any(), eq("account-1"), anyCollection());
