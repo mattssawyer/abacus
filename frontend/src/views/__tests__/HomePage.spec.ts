@@ -8,13 +8,13 @@ import {
   exchangePublicToken,
   getAccounts,
   getLinkedItemIds,
-  getSpendingByCategory,
+  getSpendingByPlanPart,
   getTransactions,
   getRecurringTransactions,
   type PlaidAccount,
   type PlaidTransaction,
   type RecurringStream,
-  type SpendingByCategory,
+  type SpendingByPlanPart,
 } from '../../api/PlaidService'
 
 vi.mock('../../api/PlaidService', () => ({
@@ -22,7 +22,7 @@ vi.mock('../../api/PlaidService', () => ({
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   getLinkedItemIds: vi.fn(),
-  getSpendingByCategory: vi.fn(),
+  getSpendingByPlanPart: vi.fn(),
   getTransactions: vi.fn(),
   getRecurringTransactions: vi.fn(),
 }))
@@ -71,14 +71,70 @@ const coffee: PlaidTransaction = {
   category: 'FOOD_AND_DRINK',
 }
 
-const spending: SpendingByCategory = {
+const spending: SpendingByPlanPart = {
   start: '2026-09-01',
   end: '2026-09-30',
-  total: 1544.5,
-  categories: [
-    { category: 'RENT_AND_UTILITIES', amount: 1450 },
-    { category: 'FOOD_AND_DRINK', amount: 82.5 },
-    { category: 'UNCATEGORIZED', amount: 12 },
+  total: 1844.5,
+  parts: [
+    {
+      part: 'FIXED_COSTS',
+      amount: 1532.5,
+      categories: [
+        {
+          category: 'RENT_AND_UTILITIES',
+          amount: 1450,
+          transactions: [
+            {
+              ...coffee,
+              transaction_id: 'rent',
+              amount: 1450,
+              merchant_name: 'Landlord',
+              date: '2026-09-01',
+            },
+          ],
+        },
+        {
+          category: 'FOOD_AND_DRINK',
+          amount: 82.5,
+          transactions: [
+            {
+              ...coffee,
+              transaction_id: 'groceries-2',
+              amount: 60,
+              merchant_name: 'Whole Foods',
+              date: '2026-09-14',
+            },
+            {
+              ...coffee,
+              transaction_id: 'groceries-1',
+              amount: 22.5,
+              merchant_name: "Trader Joe's",
+              date: '2026-09-03',
+            },
+          ],
+        },
+      ],
+    },
+    {
+      part: 'GUILT_FREE',
+      amount: 12,
+      categories: [
+        { category: 'FOOD_AND_DRINK', amount: 12, transactions: [{ ...coffee, amount: 12 }] },
+      ],
+    },
+    {
+      part: 'SAVINGS',
+      amount: 300,
+      categories: [
+        {
+          category: 'TRANSFER_OUT',
+          amount: 300,
+          transactions: [
+            { ...coffee, transaction_id: 'to-savings', amount: 300, merchant_name: 'Ally' },
+          ],
+        },
+      ],
+    },
   ],
 }
 
@@ -145,7 +201,7 @@ beforeEach(() => {
   vi.mocked(getLinkedItemIds).mockResolvedValue([])
   vi.mocked(getAccounts).mockResolvedValue([checking])
   vi.mocked(getTransactions).mockResolvedValue([coffee])
-  vi.mocked(getSpendingByCategory).mockResolvedValue(spending)
+  vi.mocked(getSpendingByPlanPart).mockResolvedValue(spending)
   vi.mocked(getRecurringTransactions).mockResolvedValue([rent])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
@@ -304,9 +360,7 @@ describe('homepage greeting', () => {
 describe('homepage recent transactions', () => {
   it('falls back when a transaction has no merchant or name', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getTransactions).mockResolvedValue([
-      { ...coffee, merchant_name: '', name: null },
-    ])
+    vi.mocked(getTransactions).mockResolvedValue([{ ...coffee, merchant_name: '', name: null }])
     const wrapper = mountHome()
     await flushPromises()
 
@@ -345,35 +399,117 @@ describe('homepage recent transactions', () => {
 })
 
 describe('homepage spending breakdown', () => {
-  it('charts each category with a readable label', async () => {
+  it('charts each plan part', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     const wrapper = mountHome()
     await flushPromises()
 
     const slices = wrapper.findAll('.chart-stub li').map((slice) => slice.text())
-    expect(slices).toEqual(['Rent & utilities: 1450', 'Food & drink: 82.5', 'Uncategorized: 12'])
+    expect(slices).toEqual(['Fixed costs: 1532.5', 'Guilt-free spending: 12', 'Savings: 300'])
     expect(wrapper.get('#spending-heading').text()).toContain('September')
-    expect(wrapper.get('.spending-legend').text()).toContain('Rent & utilities')
-    expect(wrapper.get('.spending-legend').text()).toContain('$1,450.00')
-    expect(wrapper.get('.spending-total-amount').text()).toBe('$1,545')
+    const parts = wrapper.findAll('.spending-legend > li > button').map((row) => row.text())
+    expect(parts).toEqual(['Fixed costs$1,532.50', 'Guilt-free spending$12.00', 'Savings$300.00'])
+    expect(wrapper.get('.spending-total-amount').text()).toBe('$1,845')
+  })
+
+  it('breaks each part down by Plaid category, open at first', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const fixedCosts = wrapper.get('.spending-legend > li')
+    const toggle = fixedCosts.get('button')
+    const panel = wrapper.get(`#${toggle.attributes('aria-controls')}`)
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(panel.attributes('inert')).toBeUndefined()
+    const categories = fixedCosts.findAll('.spending-category-row').map((row) => row.text())
+    expect(categories).toEqual(['Rent & utilities$1,450.00', 'Food & drink$82.50'])
+    expect(wrapper.get('[aria-label="Savings by category"] .spending-category-row').text()).toBe(
+      'Transfers out$300.00',
+    )
+
+    await toggle.trigger('click')
+
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(panel.attributes('inert')).toBeDefined()
+  })
+
+  it('lists the transactions behind a category when it opens', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const fixedCosts = wrapper.get('.spending-legend > li')
+    const food = fixedCosts.findAll('.spending-categories > li')[1]!
+    const toggle = food.get('button')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+
+    await toggle.trigger('click')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(
+      wrapper.get(`#${toggle.attributes('aria-controls')}`).attributes('inert'),
+    ).toBeUndefined()
+    const rows = food.findAll('.spending-transaction-row').map((row) => row.text())
+    expect(rows).toEqual(['Whole FoodsSep 14$60.00', "Trader Joe'sSep 3$22.50"])
+    // Opening a category leaves its siblings closed.
+    const rent = fixedCosts.findAll('.spending-categories > li')[0]!
+    expect(rent.get('button').attributes('aria-expanded')).toBe('false')
   })
 
   it('labels categories Plaid adds later without a hardcoded name', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByCategory).mockResolvedValue({
+    vi.mocked(getSpendingByPlanPart).mockResolvedValue({
       ...spending,
       total: 40,
-      categories: [{ category: 'DIGITAL_ASSETS', amount: 40 }],
+      parts: [
+        {
+          part: 'GUILT_FREE',
+          amount: 40,
+          categories: [
+            { category: 'DIGITAL_ASSETS', amount: 40, transactions: [{ ...coffee, amount: 40 }] },
+          ],
+        },
+      ],
     })
     const wrapper = mountHome()
     await flushPromises()
 
-    expect(wrapper.get('.chart-stub li').text()).toBe('Digital Assets: 40')
+    expect(wrapper.get('.spending-category-row').text()).toContain('Digital Assets')
+  })
+
+  it('checks back until new transactions are sorted', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingByPlanPart).mockResolvedValueOnce({
+      ...spending,
+      parts: [
+        ...spending.parts,
+        {
+          part: 'UNSORTED',
+          amount: 45,
+          categories: [
+            { category: 'TRAVEL', amount: 45, transactions: [{ ...coffee, amount: 45 }] },
+          ],
+        },
+      ],
+    })
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.spending-legend').text()).toContain('Not sorted yet')
+
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+
+    expect(getSpendingByPlanPart).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('.spending-legend').text()).not.toContain('Not sorted yet')
+    vi.useRealTimers()
   })
 
   it('shows an empty state instead of a blank chart', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByCategory).mockResolvedValue({ ...spending, total: 0, categories: [] })
+    vi.mocked(getSpendingByPlanPart).mockResolvedValue({ ...spending, total: 0, parts: [] })
     const wrapper = mountHome()
     await flushPromises()
 
@@ -383,7 +519,7 @@ describe('homepage spending breakdown', () => {
 
   it('keeps the rest of the dashboard working when the breakdown fails', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByCategory).mockRejectedValueOnce(new Error('Server unavailable'))
+    vi.mocked(getSpendingByPlanPart).mockRejectedValueOnce(new Error('Server unavailable'))
     const wrapper = mountHome()
     await flushPromises()
 
@@ -411,7 +547,7 @@ describe('homepage account selector', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('[aria-label="Account"]').text()).toContain('Checking ••1234')
     expect(getTransactions).toHaveBeenLastCalledWith(25, 'checking')
-    expect(getSpendingByCategory).toHaveBeenLastCalledWith('checking')
+    expect(getSpendingByPlanPart).toHaveBeenLastCalledWith('checking')
     expect(getRecurringTransactions).toHaveBeenLastCalledWith('checking', 20)
 
     await wrapper.get('[aria-label="Account"]').setValue('savings')
@@ -419,7 +555,7 @@ describe('homepage account selector', () => {
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
     expect(getTransactions).toHaveBeenLastCalledWith(25, 'savings')
-    expect(getSpendingByCategory).toHaveBeenLastCalledWith('savings')
+    expect(getSpendingByPlanPart).toHaveBeenLastCalledWith('savings')
     expect(getRecurringTransactions).toHaveBeenLastCalledWith('savings', 20)
   })
 

@@ -1,7 +1,7 @@
 import type { RecurringStream } from './PlaidService'
 
-// Plaid's primary personal finance categories, minus the income and transfer ones the
-// server filters out as non-spending.
+// Plaid's primary personal finance categories, minus the incoming ones the server leaves out
+// of spending.
 const CATEGORY_LABELS: Record<string, string> = {
   BANK_FEES: 'Bank fees',
   ENTERTAINMENT: 'Entertainment',
@@ -15,6 +15,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   PERSONAL_CARE: 'Personal care',
   RENT_AND_UTILITIES: 'Rent & utilities',
   TRANSPORTATION: 'Transportation',
+  TRANSFER_OUT: 'Transfers out',
   TRAVEL: 'Travel',
   UNCATEGORIZED: 'Uncategorized',
 }

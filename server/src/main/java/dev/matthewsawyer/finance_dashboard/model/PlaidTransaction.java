@@ -2,6 +2,8 @@ package dev.matthewsawyer.finance_dashboard.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
@@ -67,6 +69,14 @@ public class PlaidTransaction {
 
     @Column(name = "personal_finance_category_detailed", length = 128)
     private String personalFinanceCategoryDetailed;
+
+    /**
+     * Set by plan part sorting, never by Plaid. Sync saves Plaid's copy over the stored one, which
+     * clears this whenever Plaid changes a transaction so it gets sorted again.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "plan_part", length = 32)
+    private PlanPart planPart;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -222,6 +232,10 @@ public class PlaidTransaction {
 
     public String getPersonalFinanceCategoryDetailed() {
         return personalFinanceCategoryDetailed;
+    }
+
+    public PlanPart getPlanPart() {
+        return planPart;
     }
 
     public Instant getCreatedAt() {

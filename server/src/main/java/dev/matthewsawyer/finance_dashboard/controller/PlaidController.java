@@ -5,8 +5,10 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
+import dev.matthewsawyer.finance_dashboard.model.PlanPart;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
+import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
@@ -26,10 +28,12 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
 
 @RestController
 @RequestMapping("/plaid")
@@ -39,9 +43,16 @@ public class PlaidController {
     private static final int DEFAULT_RECURRING_STREAMS = 8;
     private static final int MAX_RECURRING_STREAMS = 50;
 
-    // Plaid files paychecks and account transfers under the same category field as spending.
-    private static final Set<String> NON_SPENDING_CATEGORIES =
-            Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT");
+    /** Transactions plan part sorting hasn't reached yet. */
+    static final String UNSORTED = "UNSORTED";
+
+    // The order parts are listed in, following the plan. NOT_COUNTED is left out of spending.
+    private static final List<String> PART_ORDER = List.of(
+            PlanPart.FIXED_COSTS.name(),
+            PlanPart.GUILT_FREE.name(),
+            PlanPart.SAVINGS.name(),
+            PlanPart.INVESTMENTS.name(),
+            UNSORTED);
 
     private final PlaidItemLinking itemLinking;
     private final PlaidItemRepository plaidItemRepository;
@@ -208,8 +219,8 @@ public class PlaidController {
         }
     }
 
-    @GetMapping("/spending/by-category")
-    public SpendingByCategoryResponse getSpendingByCategory(
+    @GetMapping("/spending/by-plan-part")
+    public SpendingByPlanPartResponse getSpendingByPlanPart(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam(name = "account_id", required = false) String accountId
     ) {
@@ -217,35 +228,73 @@ public class PlaidController {
         LocalDate start = LocalDate.now().withDayOfMonth(1);
         LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
 
-        List<CategorySpend> categories = transactionRepository
-                .sumSpendingByCategory(
-                        user.getId(), start, end, blankToNull(accountId), NON_SPENDING_CATEGORIES)
-                .stream()
-                // Refunds can net a category to zero or below, which a pie chart cannot show.
-                .filter(total -> total.getTotal() != null && total.getTotal().signum() > 0)
-                .map(total -> new CategorySpend(total.getCategory(), total.getTotal()))
-                .sorted(Comparator.comparing(CategorySpend::amount).reversed())
-                .toList();
+        // Newest first from the query, and kept in that order within each category.
+        Map<String, Map<String, List<PlaidTransaction>>> byPartAndCategory = new HashMap<>();
+        for (PlaidTransaction transaction : transactionRepository.findSpending(
+                user.getId(), start, end, blankToNull(accountId), PlanPartSorting.NOT_PLAN_MONEY)) {
+            String part = transaction.getPlanPart() == null ? UNSORTED : transaction.getPlanPart().name();
+            // Plaid always assigns a category, but the column is nullable.
+            String category = Objects.requireNonNullElse(
+                    transaction.getPersonalFinanceCategoryPrimary(), "UNCATEGORIZED");
+            byPartAndCategory
+                    .computeIfAbsent(part, key -> new HashMap<>())
+                    .computeIfAbsent(category, key -> new ArrayList<>())
+                    .add(transaction);
+        }
 
-        BigDecimal total = categories.stream()
-                .map(CategorySpend::amount)
+        List<PartSpend> parts = PART_ORDER.stream()
+                .filter(byPartAndCategory::containsKey)
+                .map(part -> PartSpend.of(part, byPartAndCategory.get(part)))
+                .filter(part -> !part.categories().isEmpty())
+                .toList();
+        BigDecimal total = parts.stream()
+                .map(PartSpend::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        return new SpendingByCategoryResponse(start, end, total, categories);
+        return new SpendingByPlanPartResponse(start, end, total, parts);
     }
 
-    public record SpendingByCategoryResponse(
+    public record SpendingByPlanPartResponse(
             @JsonProperty("start") LocalDate start,
             @JsonProperty("end") LocalDate end,
             @JsonProperty("total") BigDecimal total,
-            @JsonProperty("categories") List<CategorySpend> categories
+            @JsonProperty("parts") List<PartSpend> parts
     ) {
     }
 
+    /** A plan part's total, broken down by Plaid primary category, largest first. */
+    public record PartSpend(
+            @JsonProperty("part") String part,
+            @JsonProperty("amount") BigDecimal amount,
+            @JsonProperty("categories") List<CategorySpend> categories
+    ) {
+        static PartSpend of(String part, Map<String, List<PlaidTransaction>> transactionsByCategory) {
+            List<CategorySpend> largestFirst = transactionsByCategory.entrySet().stream()
+                    .map(entry -> CategorySpend.of(entry.getKey(), entry.getValue()))
+                    // Refunds can net a category to zero or below, which a pie chart cannot show.
+                    .filter(category -> category.amount().signum() > 0)
+                    .sorted(Comparator.comparing(CategorySpend::amount).reversed())
+                    .toList();
+            BigDecimal amount = largestFirst.stream()
+                    .map(CategorySpend::amount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            return new PartSpend(part, amount, largestFirst);
+        }
+    }
+
+    /** A category's total and the transactions that make it up, newest first. */
     public record CategorySpend(
             @JsonProperty("category") String category,
-            @JsonProperty("amount") BigDecimal amount
+            @JsonProperty("amount") BigDecimal amount,
+            @JsonProperty("transactions") List<TransactionResponse> transactions
     ) {
+        static CategorySpend of(String category, List<PlaidTransaction> transactions) {
+            BigDecimal amount = transactions.stream()
+                    .map(PlaidTransaction::getAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            return new CategorySpend(
+                    category, amount, transactions.stream().map(TransactionResponse::from).toList());
+        }
     }
 
     @GetMapping("/accounts")

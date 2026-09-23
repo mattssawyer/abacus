@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { UserButton, useUser } from '@clerk/vue'
-import { Landmark, Plus } from '@lucide/vue'
+import { ChevronDown, Landmark, Plus } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { ChartOptions } from 'chart.js'
 import Button from 'primevue/button'
@@ -12,18 +12,23 @@ import {
   createLinkToken,
   exchangePublicToken,
   getLinkedItemIds,
-  getSpendingByCategory,
+  getSpendingByPlanPart,
   getTransactions,
   getRecurringTransactions,
   type PlaidTransaction,
+  type PlanPart,
   type RecurringStream,
-  type SpendingByCategory,
+  type SpendingByPlanPart,
 } from '../api/PlaidService'
 import { categoryLabel, firstPresent, recurringLabel } from '../api/plaidLabels'
 import { accountLabel, useSelectedAccount } from '../accounts/useSelectedAccount'
+import { PLAN_COLORS, PLAN_TITLES } from '../spendingPlan/plan'
 
 const RECENT_TRANSACTION_COUNT = 25
 const RECURRING_STREAM_COUNT = 20
+// New transactions are sorted in the background, so check back while any are still waiting.
+const UNSORTED_RECHECK_MS = 4000
+const UNSORTED_RECHECK_LIMIT = 15
 
 const FREQUENCY_LABELS: Record<string, string> = {
   WEEKLY: 'Weekly',
@@ -34,21 +39,14 @@ const FREQUENCY_LABELS: Record<string, string> = {
   UNKNOWN: 'Recurring',
 }
 
-// Category palette borrowed from Maybe: saturated enough to tell slices apart, muted enough
-// to sit on a neutral page.
-const CATEGORY_COLORS = [
-  '#6471eb',
-  '#4da568',
-  '#e99537',
-  '#db5a54',
-  '#df4e92',
-  '#c44fe9',
-  '#61c9ea',
-  '#eb5429',
-  '#805dee',
-  '#6ad28a',
-  '#9e9e9e',
-]
+// Same colors as the spending plan page. Unsorted is grey so it reads as not yet decided.
+const PART_STYLES: Record<PlanPart, { label: string; color: string }> = {
+  FIXED_COSTS: { label: PLAN_TITLES.fixedCosts, color: PLAN_COLORS.fixedCosts },
+  GUILT_FREE: { label: PLAN_TITLES.guiltFree, color: PLAN_COLORS.guiltFree },
+  SAVINGS: { label: PLAN_TITLES.savings, color: PLAN_COLORS.savings },
+  INVESTMENTS: { label: PLAN_TITLES.investments, color: PLAN_COLORS.investments },
+  UNSORTED: { label: 'Not sorted yet', color: '#9e9e9e' },
+}
 
 const linking = ref(false)
 const linkError = ref('')
@@ -63,7 +61,13 @@ const spendingError = ref('')
 const itemIds = ref<string[]>([])
 const transactions = ref<PlaidTransaction[]>([])
 const recurring = ref<RecurringStream[]>([])
-const spending = ref<SpendingByCategory>()
+const spending = ref<SpendingByPlanPart>()
+// Parts start open and categories start closed, so parts track what's closed. Category keys
+// include the part, since the same category can appear under two parts.
+const closedParts = ref(new Set<PlanPart>())
+const openCategories = ref(new Set<string>())
+let unsortedRecheck: ReturnType<typeof setTimeout> | undefined
+let unsortedRechecks = 0
 const {
   accounts,
   selectedAccountId,
@@ -90,7 +94,6 @@ const selectedAccountLabel = computed(() => {
   const account = selectedAccount.value
   return account ? accountLabel(account) : ''
 })
-const spendingCategories = computed(() => spending.value?.categories ?? [])
 const spendingTotal = computed(() => spending.value?.total ?? 0)
 const spendingMonth = computed(() =>
   spending.value
@@ -100,10 +103,14 @@ const spendingMonth = computed(() =>
     : '',
 )
 const spendingLegend = computed(() =>
-  spendingCategories.value.map((entry, index) => ({
+  (spending.value?.parts ?? []).map((entry) => ({
     ...entry,
-    label: categoryLabel(entry.category),
-    color: CATEGORY_COLORS[index % CATEGORY_COLORS.length] as string,
+    ...PART_STYLES[entry.part],
+    categories: entry.categories.map((category) => ({
+      ...category,
+      key: `${entry.part}/${category.category}`,
+      label: categoryLabel(category.category),
+    })),
   })),
 )
 const spendingChartData = computed(() => ({
@@ -143,8 +150,13 @@ let disposed = false
 onMounted(loadConnections)
 onUnmounted(() => {
   disposed = true
+  clearTimeout(unsortedRecheck)
   handler?.destroy()
 })
+
+function toggle<T>(set: Set<T>, key: T) {
+  if (!set.delete(key)) set.add(key)
+}
 
 function formatBalance(amount: number | null) {
   if (amount === null) return '—'
@@ -237,16 +249,38 @@ function onAccountChange(event: Event) {
 
 async function loadSpending() {
   if (!itemIds.value.length) return
+  clearTimeout(unsortedRecheck)
+  unsortedRechecks = 0
   loadingSpending.value = true
   spendingError.value = ''
   try {
-    const summary = await getSpendingByCategory(selectedAccountId.value)
-    if (!disposed) spending.value = summary
+    const accountId = selectedAccountId.value
+    const summary = await getSpendingByPlanPart(accountId)
+    if (disposed) return
+    spending.value = summary
+    recheckUnsorted(accountId)
   } catch {
     if (!disposed) spendingError.value = 'We couldn’t load your spending breakdown.'
   } finally {
     if (!disposed) loadingSpending.value = false
   }
+}
+
+// Refreshes quietly in place, and gives up after a while in case sorting is switched off.
+function recheckUnsorted(accountId: string | undefined) {
+  const waiting = spending.value?.parts.some((entry) => entry.part === 'UNSORTED')
+  if (!waiting || unsortedRechecks >= UNSORTED_RECHECK_LIMIT) return
+  unsortedRecheck = setTimeout(async () => {
+    unsortedRechecks++
+    try {
+      const summary = await getSpendingByPlanPart(accountId)
+      if (disposed || accountId !== selectedAccountId.value) return
+      spending.value = summary
+      recheckUnsorted(accountId)
+    } catch {
+      // Keep showing what loaded; the next visit tries again.
+    }
+  }, UNSORTED_RECHECK_MS)
 }
 
 async function loadTransactions() {
@@ -587,7 +621,7 @@ async function openPlaidLink() {
               />
             </div>
 
-            <p v-else-if="!spendingCategories.length" class="spending-empty">
+            <p v-else-if="!spendingLegend.length" class="spending-empty">
               No spending recorded this month yet.
             </p>
 
@@ -598,7 +632,7 @@ async function openPlaidLink() {
                   :data="spendingChartData"
                   :options="spendingChartOptions"
                   class="spending-chart-canvas"
-                  :aria-label="`Spending by category for ${spendingMonth}`"
+                  :aria-label="`Spending by plan part for ${spendingMonth}`"
                 />
                 <div class="spending-total" aria-hidden="true">
                   <span class="spending-total-amount">{{ formatWholeDollars(spendingTotal) }}</span>
@@ -608,16 +642,88 @@ async function openPlaidLink() {
               <ul class="spending-legend">
                 <li
                   v-for="entry in spendingLegend"
-                  :key="entry.category"
-                  class="spending-legend-row"
+                  :key="entry.part"
+                  :class="{ 'spending-open': !closedParts.has(entry.part) }"
                 >
-                  <span
-                    class="spending-swatch"
-                    :style="{ backgroundColor: entry.color }"
-                    aria-hidden="true"
-                  />
-                  <span class="spending-legend-label">{{ entry.label }}</span>
-                  <span class="spending-legend-amount">{{ formatBalance(entry.amount) }}</span>
+                  <button
+                    type="button"
+                    class="spending-legend-row"
+                    :aria-expanded="!closedParts.has(entry.part)"
+                    :aria-controls="`spending-part-${entry.part}`"
+                    @click="toggle(closedParts, entry.part)"
+                  >
+                    <span
+                      class="spending-swatch"
+                      :style="{ backgroundColor: entry.color }"
+                      aria-hidden="true"
+                    />
+                    <span class="spending-legend-label">{{ entry.label }}</span>
+                    <span class="spending-legend-amount">{{ formatBalance(entry.amount) }}</span>
+                    <ChevronDown
+                      class="spending-chevron"
+                      :size="14"
+                      :stroke-width="1.75"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <div
+                    :id="`spending-part-${entry.part}`"
+                    class="spending-panel"
+                    :inert="closedParts.has(entry.part) || undefined"
+                  >
+                    <ul class="spending-categories" :aria-label="`${entry.label} by category`">
+                      <li
+                        v-for="category in entry.categories"
+                        :key="category.category"
+                        :class="{ 'spending-open': openCategories.has(category.key) }"
+                      >
+                        <button
+                          type="button"
+                          class="spending-legend-row spending-category-row"
+                          :aria-expanded="openCategories.has(category.key)"
+                          :aria-controls="`spending-category-${entry.part}-${category.category}`"
+                          @click="toggle(openCategories, category.key)"
+                        >
+                          <span class="spending-legend-label">{{ category.label }}</span>
+                          <span class="spending-legend-amount">
+                            {{ formatBalance(category.amount) }}
+                          </span>
+                          <ChevronDown
+                            class="spending-chevron"
+                            :size="14"
+                            :stroke-width="1.75"
+                            aria-hidden="true"
+                          />
+                        </button>
+                        <div
+                          :id="`spending-category-${entry.part}-${category.category}`"
+                          class="spending-panel"
+                          :inert="!openCategories.has(category.key) || undefined"
+                        >
+                          <ul
+                            class="spending-transactions"
+                            :aria-label="`${category.label} transactions`"
+                          >
+                            <li
+                              v-for="transaction in category.transactions"
+                              :key="transaction.transaction_id"
+                              class="spending-transaction-row"
+                            >
+                              <span class="spending-transaction-name">
+                                {{ transactionLabel(transaction) }}
+                              </span>
+                              <span class="spending-transaction-date">
+                                {{ formatTransactionDate(transaction.date) }}
+                              </span>
+                              <span class="spending-legend-amount">
+                                {{ formatBalance(transaction.amount) }}
+                              </span>
+                            </li>
+                          </ul>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
                 </li>
               </ul>
             </div>
@@ -774,7 +880,8 @@ h1 {
   display: flex;
   flex: 1;
   flex-direction: column;
-  justify-content: center;
+  /* Anchored to the top, so opening a part adds rows below without moving the chart. */
+  justify-content: flex-start;
   gap: 1.25rem;
   min-height: 0;
 }
@@ -819,19 +926,141 @@ h1 {
   font-size: 0.8125rem;
 }
 
+/* Opened parts scroll within the card instead of stretching it. */
 .spending-legend {
   display: grid;
+  flex: 0 1 auto;
+  align-content: start;
   gap: 0.125rem;
+  min-height: 0;
   margin: 0;
-  padding: 0;
+  padding: 0 0.25rem 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
+  /* Room for the scrollbar up front, so amounts don't shift when the list starts scrolling. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(11 11 11 / 28%) transparent;
 }
 
 .spending-legend-row {
   display: flex;
   align-items: center;
   gap: 0.625rem;
+  width: 100%;
   min-height: 1.75rem;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: var(--app-radius-chip);
+}
+
+.spending-legend-row:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: 2px;
+}
+
+.spending-chevron {
+  flex: none;
+  color: var(--app-text-secondary);
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.spending-open > .spending-legend-row .spending-chevron {
+  transform: rotate(180deg);
+}
+
+/*
+ * Opening only fades and slides the rows, which the browser can do without laying out the card
+ * again each frame; animating the height made it lag. Closing is instant. Child selectors keep
+ * an open part from opening its categories too.
+ */
+.spending-panel {
+  display: none;
+}
+
+.spending-open > .spending-panel {
+  display: block;
+}
+
+.spending-open > .spending-panel > ul {
+  animation: spending-reveal 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes spending-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spending-chevron {
+    transition: none;
+  }
+
+  .spending-open > .spending-panel > ul {
+    animation: none;
+  }
+}
+
+.spending-categories {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  /* Lines category names up with the part name, past the swatch. */
+  padding: 0 0 0.375rem 1.125rem;
+  list-style: none;
+}
+
+.spending-category-row {
+  min-height: 1.5rem;
+}
+
+.spending-category-row .spending-legend-label,
+.spending-category-row .spending-legend-amount {
+  color: var(--app-text-secondary);
+  font-weight: 400;
+}
+
+.spending-transactions {
+  display: grid;
+  margin: 0;
+  /* Amounts line up with the category amounts, left of the chevron column. */
+  padding: 0 1.5rem 0.25rem 0.75rem;
+  list-style: none;
+}
+
+.spending-transaction-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-height: 1.375rem;
+  font-size: 0.75rem;
+}
+
+.spending-transaction-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spending-transaction-date {
+  flex: none;
+  color: var(--app-text-subdued);
+}
+
+.spending-transaction-row .spending-legend-amount {
+  color: var(--app-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 400;
 }
 
 .spending-swatch {

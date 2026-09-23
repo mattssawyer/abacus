@@ -8,6 +8,8 @@ import dev.matthewsawyer.finance_dashboard.model.SpendingPlan;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanBucket;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanLine;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.planpart.PlanLines;
+import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.service.SpendingPlanService;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
@@ -53,6 +55,9 @@ class SpendingPlanControllerTests {
     private PlaidAccountRepository accountRepository;
 
     @Mock
+    private PlanPartSorting planPartSorting;
+
+    @Mock
     private UserService userService;
 
     private SpendingPlanController controller;
@@ -60,7 +65,7 @@ class SpendingPlanControllerTests {
 
     @BeforeEach
     void setUp() {
-        controller = new SpendingPlanController(planService, accountRepository, userService);
+        controller = new SpendingPlanController(planService, accountRepository, planPartSorting, userService);
         jwt = Jwt.withTokenValue("token").header("alg", "none").subject("user_123").build();
         User user = new User("user_123");
         ReflectionTestUtils.setField(user, "id", USER_ID);
@@ -125,6 +130,26 @@ class SpendingPlanControllerTests {
         controller.saveSpendingPlan(jwt, new SpendingPlanRequest("", null, null, null));
 
         verifyNoInteractions(accountRepository);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void hasSortingCompareThePlanLinesFromBeforeTheSave() {
+        PlanLines linesBefore = new PlanLines(List.of("Rent"), List.of(), List.of("Vacations"));
+        when(planService.find(eq(USER_ID), any())).thenAnswer(invocation -> {
+            SpendingPlan plan = new SpendingPlan(USER_ID);
+            plan.replace(null, null, SpendingPlan.DEFAULT_BUFFER_PERCENT, List.of(
+                    new SpendingPlanLine(SpendingPlanBucket.FIXED_COSTS, "Rent", null, false, List.of()),
+                    new SpendingPlanLine(SpendingPlanBucket.SAVINGS, "Vacations", null, false, List.of())));
+            return Optional.of(((Function<SpendingPlan, ?>) invocation.getArgument(1)).apply(plan));
+        });
+        when(planService.save(eq(USER_ID), eq(null), eq(null), eq(SpendingPlan.DEFAULT_BUFFER_PERCENT),
+                anyList(), any())).thenReturn(
+                new SpendingPlanResponse(null, null, SpendingPlan.DEFAULT_BUFFER_PERCENT, List.of(), Instant.now()));
+
+        controller.saveSpendingPlan(jwt, new SpendingPlanRequest(null, null, null, List.of()));
+
+        verify(planPartSorting).planSaved(USER_ID, linesBefore);
     }
 
     @Test

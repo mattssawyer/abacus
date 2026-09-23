@@ -77,3 +77,11 @@ _Avoid_: Goal, limit
 **Flagged**:
 A plan outcome that needs the user's attention: fixed costs above their target, or guilt-free spending below zero.
 _Avoid_: Over budget, warning
+
+**Plan part**:
+Where a transaction's money went in the spending plan: fixed costs, guilt-free spending, savings or investments. Unlike a bucket, it includes guilt-free spending. Money that only moves between the user's own accounts, pay coming in, and credit card payments don't count toward any part.
+_Avoid_: Bucket (guilt-free isn't one), category (that's Plaid's word)
+
+**Sorting**:
+Deciding each transaction's plan part, using the user's plan lines as a guide, so a streaming charge lands in fixed costs when the plan lists subscriptions there. New transactions are sorted after each item sync, and every transaction is sorted again when a save changes the plan's lines.
+_Avoid_: Categorizing, classifying

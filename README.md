@@ -43,7 +43,9 @@ cp .env.example .env
 ```
 
 Fill in the Clerk and Plaid values in `.env`. Configure the token encryption keyset
-using the [encryption setup guide](docs/plaid-token-encryption.md).
+using the [encryption setup guide](docs/plaid-token-encryption.md). Add a
+[TypeSafe](https://docs.typesafe.ai) API key as `TYPESAFE_API_KEY` to sort transactions
+into spending plan parts on the home page; without one, they show as not sorted yet.
 The database defaults match the local Docker Compose configuration.
 
 ```sh
