@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SpendingPlanResponse } from '../api/SpendingPlanService'
-import { defaultPlan, type PlanDraft } from './fromRecurring'
+import { defaultPlan, type PlanDraft } from './plan'
 import { fromSaved, toSaveRequest } from './savedPlan'
 
 const plan: PlanDraft = {

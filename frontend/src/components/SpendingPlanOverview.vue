@@ -2,15 +2,16 @@
 import { Pencil, RotateCcw } from '@lucide/vue'
 import { computed } from 'vue'
 import Button from 'primevue/button'
+import { formatPlanAmount } from '../spendingPlan/money'
 import {
-  PLAN_TARGETS,
-  formatPlanAmount,
+  BUCKET_IDS,
+  PLAN_TITLES,
+  evaluatePlan,
   lineAmount,
-  shareOfIncome,
-  summarizePlan,
   type BucketId,
   type PlanLineDraft,
-} from '../spendingPlan/fromRecurring'
+  type Target,
+} from '../spendingPlan/plan'
 import type { SavedPlan } from '../spendingPlan/savedPlan'
 
 const props = defineProps<{ plan: SavedPlan }>()
@@ -22,52 +23,30 @@ const emit = defineEmits<{
 
 type SegmentId = BucketId | 'guiltFree'
 
-interface Segment {
-  id: SegmentId
-  title: string
-  /** Categorical slots from the validated dataviz palette, in fixed order. */
-  color: string
-  target: { min: number; max: number }
+/** Categorical slots from the validated dataviz palette, in fixed order. */
+const SEGMENT_COLORS: Record<SegmentId, string> = {
+  fixedCosts: '#2a78d6',
+  investments: '#eb6834',
+  savings: '#1baf7a',
+  guiltFree: '#eda100',
 }
 
-const SEGMENTS: Segment[] = [
-  { id: 'fixedCosts', title: 'Fixed costs', color: '#2a78d6', target: PLAN_TARGETS.fixedCosts },
-  { id: 'investments', title: 'Investments', color: '#eb6834', target: PLAN_TARGETS.investments },
-  { id: 'savings', title: 'Savings', color: '#1baf7a', target: PLAN_TARGETS.savings },
-  {
-    id: 'guiltFree',
-    title: 'Guilt-free spending',
-    color: '#eda100',
-    target: PLAN_TARGETS.guiltFree,
-  },
-]
-
-const BUCKET_CARDS: { id: BucketId; title: string }[] = [
-  { id: 'fixedCosts', title: 'Fixed costs' },
-  { id: 'investments', title: 'Investments' },
-  { id: 'savings', title: 'Savings' },
-]
-
-const summary = computed(() =>
-  summarizePlan(props.plan.takeHome, props.plan.plan, props.plan.bufferPercent),
+const evaluation = computed(() =>
+  evaluatePlan(props.plan.takeHome, props.plan.plan, props.plan.bufferPercent),
 )
 
 const segments = computed(() =>
-  SEGMENTS.map((segment) => {
-    const amount =
-      segment.id === 'guiltFree' ? summary.value.guiltFree : summary.value.totals[segment.id]
-    const share = amount == null ? null : shareOfIncome(amount, summary.value.income)
-    return { ...segment, amount, share, over: isOver(segment, amount, share) }
+  [...BUCKET_IDS, 'guiltFree' as const].map((id) => {
+    const { amount, share, target, flagged } =
+      id === 'guiltFree' ? evaluation.value.guiltFree : evaluation.value.buckets[id]
+    return { id, title: PLAN_TITLES[id], color: SEGMENT_COLORS[id], amount, share, target, flagged }
   }),
 )
 
 /** Bar widths are shares of income, or of the plan when it adds up to more than income. */
 const barScale = computed(() => {
-  const planned =
-    summary.value.totals.fixedCosts +
-    summary.value.totals.investments +
-    summary.value.totals.savings
-  return Math.max(summary.value.income ?? 0, planned)
+  const planned = BUCKET_IDS.reduce((sum, id) => sum + evaluation.value.buckets[id].amount, 0)
+  return Math.max(evaluation.value.income ?? 0, planned)
 })
 
 const barSegments = computed(() =>
@@ -85,12 +64,7 @@ const savedOn = computed(() =>
   new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date(props.plan.updatedAt)),
 )
 
-function isOver(segment: Segment, amount: number | null, share: number | null) {
-  if (segment.id === 'guiltFree') return amount != null && amount < 0
-  return segment.id === 'fixedCosts' && share != null && share > segment.target.max
-}
-
-function targetLabel(target: { min: number; max: number }) {
+function targetLabel(target: Target) {
   return target.min === target.max
     ? `Target ~${target.min}%`
     : `Target ${target.min}–${target.max}%`
@@ -101,7 +75,7 @@ function segmentWidth(amount: number | null) {
 }
 
 function hasBuffer(bucket: BucketId) {
-  return bucket === 'fixedCosts' && summary.value.buffer > 0
+  return bucket === 'fixedCosts' && evaluation.value.buffer > 0
 }
 
 /** Lines left blank don't belong on the overview. */
@@ -129,18 +103,18 @@ function plannedLines(lines: PlanLineDraft[]) {
     <section class="panel summary-panel" aria-labelledby="plan-income-heading">
       <div class="income">
         <h2 id="plan-income-heading">Monthly income</h2>
-        <p v-if="summary.income != null" class="income-amount" aria-label="Plan income">
-          {{ formatPlanAmount(summary.income) }}
+        <p v-if="evaluation.income != null" class="income-amount" aria-label="Plan income">
+          {{ formatPlanAmount(evaluation.income) }}
         </p>
         <p v-else class="income-missing">Add your take-home pay to see how it splits.</p>
-        <p v-if="summary.fromPaycheck > 0 && plan.takeHome != null" class="income-detail">
+        <p v-if="evaluation.fromPaycheck > 0 && plan.takeHome != null" class="income-detail">
           {{ formatPlanAmount(plan.takeHome) }} take-home +
-          {{ formatPlanAmount(summary.fromPaycheck) }} from your paycheck
+          {{ formatPlanAmount(evaluation.fromPaycheck) }} from your paycheck
         </p>
       </div>
 
       <div
-        v-if="summary.income != null && barSegments.length"
+        v-if="evaluation.income != null && barSegments.length"
         class="split-bar"
         role="img"
         :aria-label="`How income splits: ${barLabel}`"
@@ -160,7 +134,7 @@ function plannedLines(lines: PlanLineDraft[]) {
           <span class="legend-title">{{ segment.title }}</span>
           <span
             class="legend-amount"
-            :class="{ 'legend-over': segment.over }"
+            :class="{ 'legend-over': segment.flagged }"
             :aria-label="`${segment.title} amount`"
           >
             {{ segment.amount == null ? '—' : formatPlanAmount(segment.amount) }}
@@ -169,9 +143,9 @@ function plannedLines(lines: PlanLineDraft[]) {
             <span
               v-if="segment.share != null"
               class="legend-share"
-              :class="{ 'legend-over': segment.over }"
+              :class="{ 'legend-over': segment.flagged }"
             >
-              {{ segment.share }}%<template v-if="segment.over"> · over target</template>
+              {{ segment.share }}%<template v-if="segment.flagged"> · over target</template>
             </span>
             <span>{{ targetLabel(segment.target) }}</span>
           </span>
@@ -181,21 +155,20 @@ function plannedLines(lines: PlanLineDraft[]) {
 
     <div class="bucket-grid">
       <section
-        v-for="bucket in BUCKET_CARDS"
-        :key="bucket.id"
+        v-for="bucket in BUCKET_IDS"
+        :key="bucket"
         class="panel bucket-card"
-        :aria-labelledby="`overview-${bucket.id}-heading`"
+        :aria-labelledby="`overview-${bucket}-heading`"
       >
         <header class="bucket-header">
-          <h2 :id="`overview-${bucket.id}-heading`">{{ bucket.title }}</h2>
-          <span class="bucket-total">{{ formatPlanAmount(summary.totals[bucket.id]) }}</span>
+          <h2 :id="`overview-${bucket}-heading`">{{ PLAN_TITLES[bucket] }}</h2>
+          <span class="bucket-total">{{
+            formatPlanAmount(evaluation.buckets[bucket].amount)
+          }}</span>
         </header>
 
-        <ul
-          v-if="plannedLines(plan.plan[bucket.id]).length || hasBuffer(bucket.id)"
-          class="line-list"
-        >
-          <li v-for="(line, index) in plannedLines(plan.plan[bucket.id])" :key="index">
+        <ul v-if="plannedLines(plan.plan[bucket]).length || hasBuffer(bucket)" class="line-list">
+          <li v-for="(line, index) in plannedLines(plan.plan[bucket])" :key="index">
             <div class="line-row">
               <span class="line-name">
                 {{ line.name || 'Untitled' }}
@@ -210,9 +183,9 @@ function plannedLines(lines: PlanLineDraft[]) {
               </li>
             </ul>
           </li>
-          <li v-if="hasBuffer(bucket.id)" class="line-row buffer-line">
+          <li v-if="hasBuffer(bucket)" class="line-row buffer-line">
             <span class="line-name">Miscellaneous buffer ({{ plan.bufferPercent }}%)</span>
-            <span class="line-amount">{{ formatPlanAmount(summary.buffer) }}</span>
+            <span class="line-amount">{{ formatPlanAmount(evaluation.buffer) }}</span>
           </li>
         </ul>
         <p v-else class="bucket-empty">Nothing planned yet.</p>

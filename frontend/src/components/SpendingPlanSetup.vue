@@ -6,22 +6,20 @@ import Skeleton from 'primevue/skeleton'
 import { getRecurringTransactions } from '../api/PlaidService'
 import { accountLabel, useSelectedAccount } from '../accounts/useSelectedAccount'
 import { saveSpendingPlan } from '../api/SpendingPlanService'
+import { estimateMonthlyTakeHome, planFromRecurring } from '../spendingPlan/fromRecurring'
+import { formatPlanAmount, parseAmount } from '../spendingPlan/money'
 import {
   DEFAULT_BUFFER_PERCENT,
   PLAN_TARGETS,
+  PLAN_TITLES,
   defaultPlan,
-  estimateMonthlyTakeHome,
-  formatPlanAmount,
+  evaluatePlan,
   lineAmount,
-  parseAmount,
-  planFromRecurring,
-  shareOfIncome,
-  summarizePlan,
   type BucketId,
   type PlanDraft,
   type PlanItemDraft,
   type PlanLineDraft,
-} from '../spendingPlan/fromRecurring'
+} from '../spendingPlan/plan'
 import { fromSaved, toSaveRequest, type SavedPlan } from '../spendingPlan/savedPlan'
 
 const props = defineProps<{
@@ -52,8 +50,6 @@ interface Bucket {
   /** What one line in this bucket is called, for placeholders and labels. */
   lineNoun: string
   addLabel: string
-  /** Share of plan income above which the total is flagged. */
-  warnAbove?: number
   /** Whether lines can be marked as taken out of the paycheck. */
   paycheckOption?: boolean
   /** Whether the bucket gets the spreadsheet's miscellaneous buffer on top of its lines. */
@@ -63,20 +59,24 @@ interface Bucket {
 const BUCKETS: Bucket[] = [
   {
     id: 'fixedCosts',
-    title: 'Fixed costs',
+    title: PLAN_TITLES.fixedCosts,
     lineNoun: 'Cost',
     addLabel: 'Add a cost',
-    warnAbove: PLAN_TARGETS.fixedCosts.max,
     buffer: true,
   },
   {
     id: 'investments',
-    title: 'Investments',
+    title: PLAN_TITLES.investments,
     lineNoun: 'Investment',
     addLabel: 'Add an investment',
     paycheckOption: true,
   },
-  { id: 'savings', title: 'Savings', lineNoun: 'Savings goal', addLabel: 'Add a savings goal' },
+  {
+    id: 'savings',
+    title: PLAN_TITLES.savings,
+    lineNoun: 'Savings goal',
+    addLabel: 'Add a savings goal',
+  },
 ]
 
 const {
@@ -95,14 +95,8 @@ const expandedRows = ref(new Set<string>())
 const saving = ref(false)
 const saveError = ref('')
 
-const summary = computed(() => summarizePlan(takeHome.value, plan.value, bufferPercent.value))
-const totals = computed(() => summary.value.totals)
-const fromPaycheck = computed(() => summary.value.fromPaycheck)
-const income = computed(() => summary.value.income)
-const guiltFree = computed(() => summary.value.guiltFree)
-const guiltFreePercent = computed(() =>
-  guiltFree.value == null ? null : shareOfIncome(guiltFree.value, income.value),
-)
+const evaluation = computed(() => evaluatePlan(takeHome.value, plan.value, bufferPercent.value))
+const guiltFree = computed(() => evaluation.value.guiltFree)
 
 if (props.saved) {
   takeHome.value = props.saved.takeHome
@@ -251,15 +245,6 @@ function targetHint(target: { min: number; max: number }) {
     : `Should be ${target.min}–${target.max}% of income`
 }
 
-function bucketPercent(bucket: BucketId) {
-  return shareOfIncome(totals.value[bucket], income.value)
-}
-
-function bucketOverTarget(bucket: Bucket) {
-  const percent = bucketPercent(bucket.id)
-  return bucket.warnAbove != null && percent != null && percent > bucket.warnAbove
-}
-
 function onBufferInput(event: Event) {
   const target = event.target
   if (!(target instanceof HTMLInputElement)) return
@@ -326,17 +311,17 @@ function amountValue(amount: number | null) {
               />
             </div>
           </div>
-          <template v-if="fromPaycheck > 0">
+          <template v-if="evaluation.fromPaycheck > 0">
             <div class="sheet-row income-addback">
               <span class="row-label">Investments taken from your paycheck</span>
               <span class="addback-amount" aria-label="Investments taken from your paycheck">
-                +{{ formatPlanAmount(fromPaycheck) }}
+                +{{ formatPlanAmount(evaluation.fromPaycheck) }}
               </span>
             </div>
-            <div v-if="income != null" class="sheet-row total-row">
+            <div v-if="evaluation.income != null" class="sheet-row total-row">
               <span class="row-label">Plan income</span>
               <div class="total-amount" aria-label="Plan income">
-                <span>{{ formatPlanAmount(income) }}</span>
+                <span>{{ formatPlanAmount(evaluation.income) }}</span>
               </div>
             </div>
           </template>
@@ -495,7 +480,7 @@ function amountValue(amount: number | null) {
                 class="derived-value"
                 aria-label="Miscellaneous buffer amount"
               >
-                {{ summary.buffer }}
+                {{ evaluation.buffer }}
               </span>
             </div>
           </div>
@@ -503,13 +488,13 @@ function amountValue(amount: number | null) {
           <div class="sheet-row total-row">
             <span class="row-label">Total</span>
             <div class="total-amount" :aria-label="`${bucket.title} total`">
-              <span>{{ formatPlanAmount(totals[bucket.id]) }}</span>
+              <span>{{ formatPlanAmount(evaluation.buckets[bucket.id].amount) }}</span>
               <span
-                v-if="bucketPercent(bucket.id) != null"
+                v-if="evaluation.buckets[bucket.id].share != null"
                 class="total-share"
-                :class="{ 'total-share-over': bucketOverTarget(bucket) }"
+                :class="{ 'total-share-over': evaluation.buckets[bucket.id].flagged }"
               >
-                {{ bucketPercent(bucket.id) }}%
+                {{ evaluation.buckets[bucket.id].share }}%
               </span>
             </div>
           </div>
@@ -518,7 +503,7 @@ function amountValue(amount: number | null) {
 
       <section class="plan-block" aria-labelledby="plan-section-heading-guilt-free">
         <div class="block-heading">
-          <h2 id="plan-section-heading-guilt-free">Guilt-free spending</h2>
+          <h2 id="plan-section-heading-guilt-free">{{ PLAN_TITLES.guiltFree }}</h2>
           <p class="block-hint">{{ targetHint(PLAN_TARGETS.guiltFree) }}</p>
         </div>
 
@@ -526,7 +511,7 @@ function amountValue(amount: number | null) {
           <Skeleton width="11rem" height="1rem" />
           <Skeleton width="6.5rem" height="1.5rem" />
         </div>
-        <p v-else-if="guiltFree == null" class="block-hint guilt-free-empty">
+        <p v-else-if="guiltFree.amount == null" class="block-hint guilt-free-empty">
           Enter your take-home pay to see what’s left to spend.
         </p>
         <template v-else>
@@ -534,17 +519,17 @@ function amountValue(amount: number | null) {
             <span class="row-label">Left to spend</span>
             <div
               class="total-amount"
-              :class="{ 'guilt-free-over': guiltFree < 0 }"
+              :class="{ 'guilt-free-over': guiltFree.flagged }"
               aria-label="Guilt-free spending total"
             >
-              <span>{{ formatPlanAmount(guiltFree) }}</span>
-              <span v-if="guiltFreePercent != null" class="total-share">
-                {{ guiltFreePercent }}%
+              <span>{{ formatPlanAmount(guiltFree.amount) }}</span>
+              <span v-if="guiltFree.share != null" class="total-share">
+                {{ guiltFree.share }}%
               </span>
             </div>
           </div>
-          <p v-if="guiltFree < 0" class="guilt-free-warning">
-            Your plan is {{ formatPlanAmount(-guiltFree) }} more than your take-home pay.
+          <p v-if="guiltFree.flagged" class="guilt-free-warning">
+            Your plan is {{ formatPlanAmount(-guiltFree.amount) }} more than your take-home pay.
           </p>
         </template>
       </section>

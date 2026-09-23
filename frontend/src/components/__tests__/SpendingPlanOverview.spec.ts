@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
 import SpendingPlanOverview from '../SpendingPlanOverview.vue'
-import { defaultPlan } from '../../spendingPlan/fromRecurring'
+import { defaultPlan } from '../../spendingPlan/plan'
 import type { SavedPlan } from '../../spendingPlan/savedPlan'
 
 enableAutoUnmount(afterEach)

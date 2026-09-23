@@ -10,7 +10,7 @@ import {
 } from '../../api/PlaidService'
 
 import { saveSpendingPlan, type SpendingPlanRequest } from '../../api/SpendingPlanService'
-import { defaultPlan } from '../../spendingPlan/fromRecurring'
+import { defaultPlan } from '../../spendingPlan/plan'
 import type { SavedPlan } from '../../spendingPlan/savedPlan'
 
 vi.mock('../../api/PlaidService', () => ({
@@ -350,6 +350,18 @@ describe('spending plan setup', () => {
     expect(wrapper.get('.guilt-free-warning').text()).toBe(
       'Your plan is $417.50 more than your take-home pay.',
     )
+  })
+
+  it('marks fixed costs over their target', async () => {
+    const wrapper = mountSetup()
+    await flushPromises()
+    const fixedCostsShare = () => wrapper.get('[aria-label="Fixed costs total"] .total-share')
+
+    expect(fixedCostsShare().classes()).not.toContain('total-share-over')
+
+    await wrapper.get('#take-home-income').setValue('1500')
+
+    expect(fixedCostsShare().classes()).toContain('total-share-over')
   })
 
   it('adds a paycheck 401(k) back to income instead of subtracting it twice', async () => {

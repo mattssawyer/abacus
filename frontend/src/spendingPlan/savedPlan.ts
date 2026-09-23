@@ -3,7 +3,7 @@ import type {
   SpendingPlanRequest,
   SpendingPlanResponse,
 } from '../api/SpendingPlanService'
-import type { BucketId, PlanDraft } from './fromRecurring'
+import type { BucketId, PlanDraft } from './plan'
 
 /** A plan as the app works with it: the editor's shape plus what it was saved with. */
 export interface SavedPlan {
