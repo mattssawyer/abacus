@@ -1,32 +1,17 @@
 package dev.matthewsawyer.finance_dashboard.controller;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.plaid.client.model.AccountsGetRequest;
-import com.plaid.client.model.AccountsGetResponse;
-import com.plaid.client.model.CountryCode;
-import com.plaid.client.model.ItemPublicTokenExchangeRequest;
-import com.plaid.client.model.ItemPublicTokenExchangeResponse;
-import com.plaid.client.model.LinkTokenCreateRequest;
-import com.plaid.client.model.LinkTokenCreateRequestUser;
-import com.plaid.client.model.LinkTokenCreateResponse;
-import com.plaid.client.model.Products;
-import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
-import dev.matthewsawyer.finance_dashboard.service.PlaidRecurringStreamSyncService;
-import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
-import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -38,22 +23,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import retrofit2.Response;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/plaid")
 public class PlaidController {
-
-    private static final Logger log = LoggerFactory.getLogger(PlaidController.class);
 
     private static final int MAX_TRANSACTION_LIMIT = 100;
     private static final int DEFAULT_RECURRING_STREAMS = 8;
@@ -63,115 +43,46 @@ public class PlaidController {
     private static final Set<String> NON_SPENDING_CATEGORIES =
             Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT");
 
-    private final PlaidApi plaidApi;
+    private final PlaidItemLinking itemLinking;
     private final PlaidItemRepository plaidItemRepository;
     private final PlaidAccountRepository accountRepository;
     private final PlaidTransactionRepository transactionRepository;
     private final PlaidRecurringStreamRepository recurringStreamRepository;
     private final UserService userService;
-    private final PlaidTokenEncryption tokenEncryption;
-    private final PlaidTransactionSyncService transactionSyncService;
-    private final PlaidRecurringStreamSyncService recurringStreamSyncService;
-    private final String webhookUrl;
 
     public PlaidController(
-            PlaidApi plaidApi,
+            PlaidItemLinking itemLinking,
             PlaidItemRepository plaidItemRepository,
             PlaidAccountRepository accountRepository,
             PlaidTransactionRepository transactionRepository,
             PlaidRecurringStreamRepository recurringStreamRepository,
-            UserService userService,
-            PlaidTokenEncryption tokenEncryption,
-            PlaidTransactionSyncService transactionSyncService,
-            PlaidRecurringStreamSyncService recurringStreamSyncService,
-            @Value("${plaid.webhook.url:}") String webhookUrl
+            UserService userService
     ) {
-        this.plaidApi = plaidApi;
+        this.itemLinking = itemLinking;
         this.plaidItemRepository = plaidItemRepository;
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.recurringStreamRepository = recurringStreamRepository;
         this.userService = userService;
-        this.tokenEncryption = tokenEncryption;
-        this.transactionSyncService = transactionSyncService;
-        this.recurringStreamSyncService = recurringStreamSyncService;
-        this.webhookUrl = webhookUrl;
     }
 
     @PostMapping("/create-link-token")
-    public Map<String, String> createLinkToken(@AuthenticationPrincipal Jwt jwt) throws IOException {
+    public Map<String, String> createLinkToken(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);
-        LinkTokenCreateRequest request = new LinkTokenCreateRequest()
-                .user(new LinkTokenCreateRequestUser().clientUserId(user.getId().toString()))
-                .clientName("Abacus")
-                .products(List.of(Products.TRANSACTIONS))
-                .countryCodes(List.of(CountryCode.US))
-                .language("en");
-
-        // Items linked without a URL never receive webhooks, so local runs without a tunnel
-        // simply fall back to syncing at link time.
-        if (!webhookUrl.isBlank()) {
-            request.webhook(webhookUrl);
-        }
-
-        Response<LinkTokenCreateResponse> response = plaidApi.linkTokenCreate(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid link token create failed");
-        }
-
-        return Map.of("link_token", response.body().getLinkToken());
+        return Map.of("link_token", itemLinking.createLinkToken(user.getId()));
     }
 
     @PostMapping("/items")
     public Map<String, String> exchangePublicToken(
             @AuthenticationPrincipal Jwt jwt,
             @RequestBody ExchangePublicTokenRequest request
-    ) throws IOException {
+    ) {
         if (request.publicToken() == null || request.publicToken().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Public token is required");
         }
 
         User user = userService.getOrCreateUser(jwt);
-        ItemPublicTokenExchangeRequest plaidRequest = new ItemPublicTokenExchangeRequest()
-                .publicToken(request.publicToken());
-
-        Response<ItemPublicTokenExchangeResponse> response =
-                plaidApi.itemPublicTokenExchange(plaidRequest).execute();
-
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid token exchange failed");
-        }
-
-        // Plaid returns the same item_id when an institution is re-linked, so this upserts
-        // onto the existing row to keep its transactions cursor.
-        ItemPublicTokenExchangeResponse exchange = response.body();
-        String encryptedToken = tokenEncryption.encrypt(
-                exchange.getAccessToken(), user.getId(), exchange.getItemId());
-        PlaidItem item = plaidItemRepository.findByItemIdAndUserId(exchange.getItemId(), user.getId())
-                .orElseGet(() -> new PlaidItem(exchange.getItemId(), encryptedToken, user.getId()));
-        item.updateAccessToken(encryptedToken);
-        plaidItemRepository.save(item);
-
-        syncLinkedItem(item);
-
-        return Map.of("item_id", exchange.getItemId());
-    }
-
-    /**
-     * The item is already linked at this point, so a sync failure must not fail the
-     * request; webhooks backfill whatever this missed.
-     */
-    private void syncLinkedItem(PlaidItem item) {
-        try {
-            transactionSyncService.syncItem(item);
-        } catch (IOException | RuntimeException e) {
-            log.warn("Initial transactions sync failed for item {}", item.getItemId(), e);
-        }
-        try {
-            recurringStreamSyncService.syncItem(item);
-        } catch (IOException | RuntimeException e) {
-            log.warn("Initial recurring stream sync failed for item {}", item.getItemId(), e);
-        }
+        return Map.of("item_id", itemLinking.link(user.getId(), request.publicToken()));
     }
 
     public record ExchangePublicTokenRequest(String publicToken) {
@@ -216,7 +127,6 @@ public class PlaidController {
             @RequestParam(name = "limit", required = false) Integer limit
     ) {
         User user = userService.getOrCreateUser(jwt);
-        backfillRecurringStreams(user.getId());
 
         String accountFilter = blankToNull(accountId);
         List<PlaidRecurringStream> stored = accountFilter == null
@@ -236,23 +146,6 @@ public class PlaidController {
         }
 
         return Map.of("streams", streams);
-    }
-
-    /**
-     * Items linked before streams were stored have never been synced. Fetch once, then
-     * later loads read Postgres.
-     */
-    private void backfillRecurringStreams(UUID userId) {
-        for (PlaidItem item : plaidItemRepository.findAllByUserIdOrderByItemIdAsc(userId)) {
-            if (item.getRecurringSyncedAt() != null) {
-                continue;
-            }
-            try {
-                recurringStreamSyncService.syncItem(item);
-            } catch (IOException | RuntimeException e) {
-                log.warn("Recurring stream backfill failed for item {}", item.getItemId(), e);
-            }
-        }
     }
 
     public record RecurringStreamResponse(
@@ -356,13 +249,8 @@ public class PlaidController {
     }
 
     @GetMapping("/accounts")
-    public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt)
-            throws IOException {
+    public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);
-        if (!accountRepository.existsByUserId(user.getId())) {
-            backfillAccounts(user.getId());
-        }
-
         List<AccountResponse> accounts = accountRepository
                 .findAllByUserIdOrderByNameAscAccountIdAsc(user.getId())
                 .stream()
@@ -370,24 +258,6 @@ public class PlaidController {
                 .toList();
 
         return Map.of("accounts", accounts);
-    }
-
-    /**
-     * Items linked before accounts were stored have metadata only in Plaid. Fetch once, then
-     * later loads read Postgres.
-     */
-    private void backfillAccounts(UUID userId) throws IOException {
-        List<PlaidItem> items = plaidItemRepository.findAllByUserIdOrderByItemIdAsc(userId);
-        for (PlaidItem item : items) {
-            AccountsGetRequest request = new AccountsGetRequest()
-                    .accessToken(tokenEncryption.decrypt(
-                            item.getEncryptedAccessToken(), userId, item.getItemId()));
-            Response<AccountsGetResponse> response = plaidApi.accountsGet(request).execute();
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid accounts get failed");
-            }
-            transactionSyncService.upsertAccounts(item, response.body().getAccounts());
-        }
     }
 
     public record AccountResponse(

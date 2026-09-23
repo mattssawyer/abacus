@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.service;
+package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.plaid.client.model.PersonalFinanceCategory;
 import com.plaid.client.model.RecurringTransactionFrequency;
@@ -20,32 +20,30 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.HttpStatus;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
 import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-class PlaidRecurringStreamSyncServiceTests {
+class RecurringStreamsSyncTests {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
@@ -66,12 +64,12 @@ class PlaidRecurringStreamSyncServiceTests {
 
     private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
             TestPlaidKeysets.create());
-    private PlaidRecurringStreamSyncService service;
+    private RecurringStreamsSync sync;
     private PlaidItem item;
 
     @BeforeEach
     void setUp() {
-        service = new PlaidRecurringStreamSyncService(
+        sync = new RecurringStreamsSync(
                 plaidApi,
                 plaidItemRepository,
                 streamRepository,
@@ -99,7 +97,7 @@ class PlaidRecurringStreamSyncServiceTests {
                         unnamedInterestDeposit(),
                         interestPaymentDeposit())));
 
-        service.syncItem(item);
+        sync.sync(item);
 
         ArgumentCaptor<TransactionsRecurringGetRequest> requestCaptor =
                 ArgumentCaptor.forClass(TransactionsRecurringGetRequest.class);
@@ -115,8 +113,7 @@ class PlaidRecurringStreamSyncServiceTests {
         assertEquals("FOOD_AND_DRINK", stored.get(0).getCategory());
         assertEquals("FOOD_AND_DRINK_GROCERIES", stored.get(0).getCategoryDetailed());
         assertTrue(stored.get(1).isInflow());
-        assertNotNull(item.getRecurringSyncedAt());
-        verify(plaidItemRepository).save(item);
+        verify(plaidItemRepository).markRecurringSynced(eq("item-id"), any(Instant.class));
     }
 
     @Test
@@ -125,61 +122,23 @@ class PlaidRecurringStreamSyncServiceTests {
                 .outflowStreams(List.of())
                 .inflowStreams(List.of()));
 
-        service.syncItem(item);
+        sync.sync(item);
 
         verify(streamRepository).deleteAllByItemId("item-id");
         verify(streamRepository, org.mockito.Mockito.never()).saveAll(any());
-        assertNotNull(item.getRecurringSyncedAt());
+        verify(plaidItemRepository).markRecurringSynced(eq("item-id"), any(Instant.class));
     }
 
     @Test
-    void failsWithBadGatewayWhenPlaidRejectsTheFetch() throws IOException {
+    void failsWithoutTouchingStoredStreamsWhenPlaidRejectsTheFetch() throws IOException {
         when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
                 .thenReturn(recurringCall);
         when(recurringCall.execute()).thenReturn(
                 Response.error(500, ResponseBody.create("{}", MediaType.get("application/json"))));
 
-        ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class, () -> service.syncItem(item));
+        assertThrows(PlaidRequestException.class, () -> sync.sync(item));
 
-        assertEquals(HttpStatus.BAD_GATEWAY, exception.getStatusCode());
-        assertNull(item.getRecurringSyncedAt());
-        verifyNoMoreInteractions(streamRepository);
-    }
-
-    @Test
-    void asyncSyncStoresStreamsForTheStoredItem() throws IOException {
-        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
-        stubRecurring(new TransactionsRecurringGetResponse()
-                .outflowStreams(List.of(
-                        stream("rent", "checking", "Landlord", 1450.0, RecurringTransactionFrequency.MONTHLY,
-                                LocalDate.of(2026, 10, 1), true)))
-                .inflowStreams(List.of()));
-
-        service.syncItemAsync("item-id");
-
-        assertEquals("rent", captureSavedStreams().get(0).getStreamId());
-    }
-
-    @Test
-    void asyncSyncSwallowsFailuresSoPlaidIsNotRetriedForever() throws IOException {
-        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
-        when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
-                .thenReturn(recurringCall);
-        when(recurringCall.execute()).thenThrow(new IOException("Plaid unreachable"));
-
-        service.syncItemAsync("item-id");
-
-        verify(streamRepository, org.mockito.Mockito.never()).saveAll(any());
-    }
-
-    @Test
-    void asyncSyncIgnoresItemsThatAreNoLongerStored() {
-        when(plaidItemRepository.findById("missing-item")).thenReturn(Optional.empty());
-
-        service.syncItemAsync("missing-item");
-
-        verifyNoMoreInteractions(plaidApi);
+        verifyNoMoreInteractions(streamRepository, plaidItemRepository);
     }
 
     private void stubRecurring(TransactionsRecurringGetResponse response) throws IOException {

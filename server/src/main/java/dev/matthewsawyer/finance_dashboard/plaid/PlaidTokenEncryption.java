@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.service;
+package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.google.crypto.tink.Aead;
 import com.google.crypto.tink.InsecureSecretKeyAccess;

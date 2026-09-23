@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.service;
+package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.plaid.client.model.AccountBalance;
 import com.plaid.client.model.AccountBase;
@@ -16,25 +16,19 @@ import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
-import retrofit2.Response;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
-@Service
-public class PlaidTransactionSyncService {
+/** Brings an item's accounts and transactions up to date, starting from its stored cursor. */
+@Component
+class TransactionsSync {
 
-    private static final Logger log = LoggerFactory.getLogger(PlaidTransactionSyncService.class);
+    private static final Logger log = LoggerFactory.getLogger(TransactionsSync.class);
 
     private static final int PAGE_SIZE = 500;
 
@@ -47,9 +41,8 @@ public class PlaidTransactionSyncService {
     private final PlaidTransactionRepository transactionRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
-    private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
 
-    public PlaidTransactionSyncService(
+    TransactionsSync(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
             PlaidAccountRepository accountRepository,
@@ -66,44 +59,25 @@ public class PlaidTransactionSyncService {
     }
 
     /**
-     * Syncs off the request thread so webhook responses stay fast. Runs one sync at a time per
-     * item, since concurrent syncs would race each other's cursor.
+     * Pulls every page Plaid has for the item. Returns the number of transactions added,
+     * modified or removed.
      */
-    @Async("plaidSyncExecutor")
-    public void syncItemAsync(String itemId) {
-        synchronized (itemLocks.computeIfAbsent(itemId, key -> new Object())) {
-            try {
-                PlaidItem item = plaidItemRepository.findById(itemId).orElse(null);
-                if (item == null) {
-                    log.warn("Skipping transactions sync for unknown item {}", itemId);
-                    return;
-                }
-                syncItem(item);
-            } catch (IOException | RuntimeException e) {
-                // Plaid re-notifies on the next update, so a failure here is recoverable.
-                log.warn("Transactions sync failed for item {}", itemId, e);
-            }
-        }
-    }
-
-    /**
-     * Pulls every page Plaid has for the item, starting from its stored cursor.
-     * Returns the number of transactions added, modified or removed.
-     */
-    public int syncItem(PlaidItem item) throws IOException {
+    int sync(PlaidItem item) {
         String itemId = item.getItemId();
         log.info("Starting transactions sync for item {}", itemId);
 
         String accessToken = tokenEncryption.decrypt(
                 item.getEncryptedAccessToken(), item.getUserId(), itemId);
 
+        String cursor = item.getTransactionsCursor();
         int added = 0;
         int modified = 0;
         int removed = 0;
         int pages = 0;
         for (int page = 0; page < MAX_PAGES; page++) {
-            TransactionsSyncResponse body = fetchPage(itemId, accessToken, item.getTransactionsCursor());
+            TransactionsSyncResponse body = fetchPage(accessToken, cursor);
             PageCounts counts = applyPage(item, body);
+            cursor = body.getNextCursor();
             added += counts.added();
             modified += counts.modified();
             removed += counts.removed();
@@ -122,21 +96,14 @@ public class PlaidTransactionSyncService {
         throw new IllegalStateException("Plaid transactions sync exceeded " + MAX_PAGES + " pages");
     }
 
-    private TransactionsSyncResponse fetchPage(String itemId, String accessToken, String cursor)
-            throws IOException {
+    private TransactionsSyncResponse fetchPage(String accessToken, String cursor) {
         TransactionsSyncRequest request = new TransactionsSyncRequest()
                 .accessToken(accessToken)
                 .cursor(cursor)
                 .count(PAGE_SIZE)
                 .options(new TransactionsSyncRequestOptions().includePersonalFinanceCategory(true));
 
-        Response<TransactionsSyncResponse> response = plaidApi.transactionsSync(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            log.warn("Plaid transactions sync failed for item {} with HTTP {}", itemId, response.code());
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Plaid transactions sync failed");
-        }
-
-        return response.body();
+        return PlaidCalls.execute(plaidApi.transactionsSync(request), "transactions sync");
     }
 
     /**
@@ -165,8 +132,7 @@ public class PlaidTransactionSyncService {
                 transactionRepository.deleteAllByItemIdAndTransactionIdIn(item.getItemId(), removedIds);
             }
 
-            item.updateTransactionsCursor(page.getNextCursor());
-            plaidItemRepository.save(item);
+            plaidItemRepository.updateTransactionsCursor(item.getItemId(), page.getNextCursor());
         });
 
         return new PageCounts(added.size(), modified.size(), removed.size());
@@ -175,7 +141,7 @@ public class PlaidTransactionSyncService {
     private record PageCounts(int added, int modified, int removed) {
     }
 
-    public void upsertAccounts(PlaidItem item, List<AccountBase> plaidAccounts) {
+    private void upsertAccounts(PlaidItem item, List<AccountBase> plaidAccounts) {
         if (plaidAccounts == null || plaidAccounts.isEmpty()) {
             return;
         }

@@ -1,0 +1,79 @@
+# Abacus
+
+A personal finance dashboard that pulls a user's bank data from Plaid and helps them build a Conscious Spending Plan from it.
+
+## Language
+
+### Bank data
+
+**Plaid item**:
+One login at one institution that a user has connected through Plaid. It holds one or more accounts.
+_Avoid_: Connection, link, institution
+
+**Account**:
+A single bank, card or investment account within a Plaid item, with its latest balances.
+_Avoid_: Plaid account (outside code that talks to Plaid directly)
+
+**Selected account**:
+The account the user is currently viewing, remembered across pages and visits. Home and a new spending plan setup both start from it.
+_Avoid_: Current account, active account
+
+**Recurring stream**:
+A payment or deposit Plaid has detected repeating on an account, such as a bill or a paycheck.
+_Avoid_: Recurring transaction, subscription
+
+### Keeping data current
+
+**Item linking**:
+Connecting a new Plaid item, or reconnecting an existing one, and storing its access for later syncs.
+_Avoid_: Onboarding, token exchange
+
+**Item sync**:
+Bringing a Plaid item's stored accounts, transactions and recurring streams up to date with Plaid. It runs when an item is linked and when Plaid notifies us of changes.
+_Avoid_: Refresh, backfill, import
+
+### Spending plan
+
+**Spending plan**:
+A user's monthly Conscious Spending Plan (Ramit Sethi's method): take-home pay split across buckets, with whatever is left as guilt-free spending. A user has at most one saved plan.
+_Avoid_: Budget
+
+**Bucket**:
+One of the plan's three planned categories: fixed costs, investments or savings. Guilt-free spending is what remains after them, not a bucket.
+_Avoid_: Category (that's Plaid's word for transactions)
+
+**Line**:
+A named amount within a bucket, such as "Rent/mortgage" or "401(k)".
+_Avoid_: Row, entry
+
+**Breakdown item**:
+One of the amounts a line can be split into, such as each insurance policy under "Insurance". It may come from a recurring stream. When a line has breakdown items, its amount is their sum.
+_Avoid_: Item on its own (clashes with Plaid item), sub-line
+
+**Take-home pay**:
+What lands in the user's account each month after taxes and paycheck deductions.
+_Avoid_: Income, salary, net pay
+
+**Paycheck contribution**:
+An investment line taken out of the paycheck before it's deposited, like most 401(k)s.
+_Avoid_: Pre-tax deduction
+
+**Plan income**:
+Take-home pay plus paycheck contributions. Every bucket's share is measured against it.
+_Avoid_: Income, gross income
+
+**Fixed-cost buffer**:
+A percentage added on top of fixed costs to cover forgotten and rising costs. It defaults to 15%.
+_Avoid_: Miscellaneous, padding
+
+**Guilt-free spending**:
+Plan income minus the three buckets. It's negative when the plan spends more than it has.
+_Avoid_: Discretionary, leftover, fun money
+
+**Target**:
+The suggested share of plan income for a bucket or for guilt-free spending, such as 50–60% for fixed costs.
+_Avoid_: Goal, limit
+
+**Flagged**:
+A plan outcome that needs the user's attention: fixed costs above their target, or guilt-free spending below zero.
+_Avoid_: Over budget, warning
