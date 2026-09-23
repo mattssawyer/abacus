@@ -1,33 +1,18 @@
 package dev.matthewsawyer.finance_dashboard.controller;
 
-import com.plaid.client.model.AccountBalance;
-import com.plaid.client.model.AccountBase;
-import com.plaid.client.model.AccountsGetRequest;
-import com.plaid.client.model.AccountsGetResponse;
-import com.plaid.client.model.AccountType;
-import com.plaid.client.model.ItemPublicTokenExchangeRequest;
-import com.plaid.client.model.ItemPublicTokenExchangeResponse;
-import com.plaid.client.model.LinkTokenCreateRequest;
-import com.plaid.client.model.LinkTokenCreateResponse;
-import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
-import dev.matthewsawyer.finance_dashboard.service.PlaidRecurringStreamSyncService;
-import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
-import dev.matthewsawyer.finance_dashboard.service.PlaidTransactionSyncService;
-import okhttp3.MediaType;
-import okhttp3.ResponseBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import dev.matthewsawyer.finance_dashboard.TestPlaidKeysets;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -37,31 +22,23 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
-import retrofit2.Call;
-import retrofit2.Response;
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -70,10 +47,8 @@ import static org.mockito.Mockito.when;
 class PlaidControllerTests {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
-    private static final String WEBHOOK_URL = "https://abacus.test/api/plaid/webhook";
-
     @Mock
-    private PlaidApi plaidApi;
+    private PlaidItemLinking itemLinking;
 
     @Mock
     private PlaidItemRepository plaidItemRepository;
@@ -85,28 +60,11 @@ class PlaidControllerTests {
     private PlaidTransactionRepository transactionRepository;
 
     @Mock
-    private UserService userService;
-
-    @Mock
-    private PlaidTransactionSyncService transactionSyncService;
-
-    @Mock
     private PlaidRecurringStreamRepository recurringStreamRepository;
 
     @Mock
-    private PlaidRecurringStreamSyncService recurringStreamSyncService;
+    private UserService userService;
 
-    @Mock
-    private Call<LinkTokenCreateResponse> linkTokenCall;
-
-    @Mock
-    private Call<ItemPublicTokenExchangeResponse> exchangeCall;
-
-    @Mock
-    private Call<AccountsGetResponse> accountsCall;
-
-    private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
-            TestPlaidKeysets.create());
     private PlaidController controller;
     private Jwt jwt;
     private User user;
@@ -114,16 +72,12 @@ class PlaidControllerTests {
     @BeforeEach
     void setUp() {
         controller = new PlaidController(
-                plaidApi,
+                itemLinking,
                 plaidItemRepository,
                 accountRepository,
                 transactionRepository,
                 recurringStreamRepository,
-                userService,
-                tokenEncryption,
-                transactionSyncService,
-                recurringStreamSyncService,
-                WEBHOOK_URL
+                userService
         );
         jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
@@ -134,45 +88,11 @@ class PlaidControllerTests {
     }
 
     @Test
-    void pointsLinkTokensAtTheWebhookUrl() throws IOException {
+    void createsLinkTokensForTheCurrentUser() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.linkTokenCreate(any(LinkTokenCreateRequest.class))).thenReturn(linkTokenCall);
-        when(linkTokenCall.execute()).thenReturn(
-                Response.success(new LinkTokenCreateResponse().linkToken("link-token")));
+        when(itemLinking.createLinkToken(USER_ID)).thenReturn("link-token");
 
         assertEquals(Map.of("link_token", "link-token"), controller.createLinkToken(jwt));
-
-        ArgumentCaptor<LinkTokenCreateRequest> requestCaptor =
-                ArgumentCaptor.forClass(LinkTokenCreateRequest.class);
-        verify(plaidApi).linkTokenCreate(requestCaptor.capture());
-        assertEquals(WEBHOOK_URL, requestCaptor.getValue().getWebhook());
-    }
-
-    @Test
-    void omitsTheWebhookUrlWhenItIsNotConfigured() throws IOException {
-        PlaidController unconfigured = new PlaidController(
-                plaidApi,
-                plaidItemRepository,
-                accountRepository,
-                transactionRepository,
-                recurringStreamRepository,
-                userService,
-                tokenEncryption,
-                transactionSyncService,
-                recurringStreamSyncService,
-                ""
-        );
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.linkTokenCreate(any(LinkTokenCreateRequest.class))).thenReturn(linkTokenCall);
-        when(linkTokenCall.execute()).thenReturn(
-                Response.success(new LinkTokenCreateResponse().linkToken("link-token")));
-
-        unconfigured.createLinkToken(jwt);
-
-        ArgumentCaptor<LinkTokenCreateRequest> requestCaptor =
-                ArgumentCaptor.forClass(LinkTokenCreateRequest.class);
-        verify(plaidApi).linkTokenCreate(requestCaptor.capture());
-        assertNull(requestCaptor.getValue().getWebhook());
     }
 
     @Test
@@ -186,108 +106,18 @@ class PlaidControllerTests {
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        verifyNoInteractions(userService, plaidApi, plaidItemRepository, transactionSyncService);
+        verifyNoInteractions(userService, itemLinking);
     }
 
     @Test
-    void exchangesPublicTokenAndStoresEncryptedAccessToken() throws IOException {
-        ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
-                .itemId("item-id")
-                .accessToken("access-token")
-                .requestId("request-id");
-
+    void linksTheItemForTheCurrentUser() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
-                .thenReturn(exchangeCall);
-        when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
-        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.empty());
-
-        Map<String, String> result = controller.exchangePublicToken(
-                jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
-
-        ArgumentCaptor<ItemPublicTokenExchangeRequest> requestCaptor =
-                ArgumentCaptor.forClass(ItemPublicTokenExchangeRequest.class);
-        ArgumentCaptor<PlaidItem> itemCaptor = ArgumentCaptor.forClass(PlaidItem.class);
-        verify(plaidApi).itemPublicTokenExchange(requestCaptor.capture());
-        verify(plaidItemRepository).save(itemCaptor.capture());
-
-        assertEquals("public-token", requestCaptor.getValue().getPublicToken());
-        assertEquals(Map.of("item_id", "item-id"), result);
-        assertEquals("item-id", itemCaptor.getValue().getItemId());
-        String encrypted = itemCaptor.getValue().getEncryptedAccessToken();
-        assertNotEquals("access-token", encrypted);
-        assertEquals("access-token", tokenEncryption.decrypt(encrypted, USER_ID, "item-id"));
-        assertEquals(USER_ID, itemCaptor.getValue().getUserId());
-        verify(transactionSyncService).syncItem(itemCaptor.getValue());
-        verify(recurringStreamSyncService).syncItem(itemCaptor.getValue());
-    }
-
-    @Test
-    void keepsExistingCursorWhenItemIsRelinked() throws IOException {
-        PlaidItem existingItem = new PlaidItem("item-id", "old-encrypted-token", USER_ID);
-        existingItem.updateTransactionsCursor("stored-cursor");
-        ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
-                .itemId("item-id")
-                .accessToken("new-access-token")
-                .requestId("request-id");
-
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
-                .thenReturn(exchangeCall);
-        when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
-        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID))
-                .thenReturn(Optional.of(existingItem));
-
-        controller.exchangePublicToken(
-                jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
-
-        ArgumentCaptor<PlaidItem> itemCaptor = ArgumentCaptor.forClass(PlaidItem.class);
-        verify(plaidItemRepository).save(itemCaptor.capture());
-
-        assertEquals("stored-cursor", itemCaptor.getValue().getTransactionsCursor());
-        assertEquals("new-access-token", tokenEncryption.decrypt(
-                itemCaptor.getValue().getEncryptedAccessToken(), USER_ID, "item-id"));
-    }
-
-    @Test
-    void linksItemEvenWhenInitialTransactionSyncFails() throws IOException {
-        ItemPublicTokenExchangeResponse plaidResponse = new ItemPublicTokenExchangeResponse()
-                .itemId("item-id")
-                .accessToken("access-token")
-                .requestId("request-id");
-
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
-                .thenReturn(exchangeCall);
-        when(exchangeCall.execute()).thenReturn(Response.success(plaidResponse));
-        when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.empty());
-        when(transactionSyncService.syncItem(any(PlaidItem.class)))
-                .thenThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "boom"));
+        when(itemLinking.link(USER_ID, "public-token")).thenReturn("item-id");
 
         Map<String, String> result = controller.exchangePublicToken(
                 jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
 
         assertEquals(Map.of("item_id", "item-id"), result);
-        verify(plaidItemRepository).save(any(PlaidItem.class));
-        verify(recurringStreamSyncService).syncItem(any(PlaidItem.class));
-    }
-
-    @Test
-    void doesNotStoreItemWhenPlaidExchangeFails() throws IOException {
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
-                .thenReturn(exchangeCall);
-        when(exchangeCall.execute()).thenReturn(
-                Response.error(500, ResponseBody.create("{}", MediaType.get("application/json"))));
-
-        ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class,
-                () -> controller.exchangePublicToken(
-                        jwt, new PlaidController.ExchangePublicTokenRequest("public-token"))
-        );
-
-        assertEquals(HttpStatus.BAD_GATEWAY, exception.getStatusCode());
-        verifyNoInteractions(plaidItemRepository);
     }
 
     @Test
@@ -302,7 +132,6 @@ class PlaidControllerTests {
 
         assertEquals(Map.of("item_ids", List.of("item-one", "item-two")), result);
         verify(plaidItemRepository).findAllByUserIdOrderByItemIdAsc(USER_ID);
-        verifyNoInteractions(plaidApi);
     }
 
     @Test
@@ -311,14 +140,12 @@ class PlaidControllerTests {
         when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
 
         assertEquals(Map.of("item_ids", List.of()), controller.getLinkedItems(jwt));
-        verifyNoInteractions(plaidApi);
     }
 
     @Test
-    void returnsStoredAccountsWithoutCallingPlaid() throws IOException {
+    void returnsStoredAccounts() {
         PlaidAccount stored = checkingAccount();
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(accountRepository.existsByUserId(USER_ID)).thenReturn(true);
         when(accountRepository.findAllByUserIdOrderByNameAscAccountIdAsc(USER_ID))
                 .thenReturn(List.of(stored));
 
@@ -328,46 +155,6 @@ class PlaidControllerTests {
         assertEquals("checking", result.get(0).accountId());
         assertEquals("Checking", result.get(0).name());
         assertEquals(new BigDecimal("1250.50"), result.get(0).balances().current());
-        verifyNoInteractions(plaidApi);
-    }
-
-    @Test
-    void backfillsAccountsFromPlaidWhenNoneAreStored() throws IOException {
-        PlaidItem item = new PlaidItem(
-                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
-        AccountsGetResponse plaidResponse = new AccountsGetResponse()
-                .accounts(List.of(new AccountBase()
-                        .accountId("checking")
-                        .name("Checking")
-                        .type(AccountType.DEPOSITORY)
-                        .balances(new AccountBalance().current(1250.5))));
-
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(accountRepository.existsByUserId(USER_ID)).thenReturn(false);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
-        when(plaidApi.accountsGet(any(AccountsGetRequest.class))).thenReturn(accountsCall);
-        when(accountsCall.execute()).thenReturn(Response.success(plaidResponse));
-        when(accountRepository.findAllByUserIdOrderByNameAscAccountIdAsc(USER_ID))
-                .thenReturn(List.of(checkingAccount()));
-
-        controller.getAccounts(jwt);
-
-        ArgumentCaptor<AccountsGetRequest> requestCaptor =
-                ArgumentCaptor.forClass(AccountsGetRequest.class);
-        verify(plaidApi).accountsGet(requestCaptor.capture());
-        assertEquals("access-token", requestCaptor.getValue().getAccessToken());
-        verify(transactionSyncService).upsertAccounts(item, plaidResponse.getAccounts());
-    }
-
-    @Test
-    void refusesPlaintextStoredTokenBeforeCallingPlaid() {
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(accountRepository.existsByUserId(USER_ID)).thenReturn(false);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(
-                new PlaidItem("item-id", "access-token", USER_ID)));
-
-        assertThrows(IllegalStateException.class, () -> controller.getAccounts(jwt));
-        verifyNoInteractions(plaidApi);
     }
 
     @Test
@@ -392,7 +179,6 @@ class PlaidControllerTests {
         assertEquals("Coffee Shop", result.get(0).merchantName());
         assertEquals(LocalDate.of(2026, 9, 1), result.get(0).date());
         assertEquals("FOOD_AND_DRINK", result.get(0).category());
-        verifyNoInteractions(plaidApi);
     }
 
     @Test
@@ -474,7 +260,7 @@ class PlaidControllerTests {
                 ResponseStatusException.class, () -> controller.getTransactions(jwt, 101, null));
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        verifyNoInteractions(userService, transactionRepository, plaidApi);
+        verifyNoInteractions(userService, transactionRepository);
     }
 
     @Test
@@ -489,10 +275,8 @@ class PlaidControllerTests {
     }
 
     @Test
-    void returnsStoredRecurringStreamsSoonestFirst() throws IOException {
-        PlaidItem item = syncedItem();
+    void returnsStoredRecurringStreamsSoonestFirst() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
         when(recurringStreamRepository.findAllByUserId(USER_ID)).thenReturn(List.of(
                 storedStream("rent", "checking", "Landlord", new BigDecimal("1450.0"), "MONTHLY",
                         LocalDate.of(2026, 10, 1), false),
@@ -512,56 +296,29 @@ class PlaidControllerTests {
         assertTrue(streams.get(0).isInflow());
         assertEquals("FOOD_AND_DRINK", streams.get(1).category());
         assertEquals("FOOD_AND_DRINK_GROCERIES", streams.get(1).categoryDetailed());
-        verifyNoInteractions(plaidApi);
-        verify(recurringStreamSyncService, never()).syncItem(any());
     }
 
     @Test
     void filtersStoredRecurringStreamsToTheRequestedAccount() {
-        PlaidItem item = syncedItem();
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
         when(recurringStreamRepository.findAllByUserIdAndAccountId(USER_ID, "account-1"))
                 .thenReturn(List.of());
 
         controller.getRecurringTransactions(jwt, "account-1", null);
 
         verify(recurringStreamRepository).findAllByUserIdAndAccountId(USER_ID, "account-1");
-        verifyNoInteractions(plaidApi);
     }
 
     @Test
     void returnsNoRecurringStreamsWhenNothingIsLinked() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
         when(recurringStreamRepository.findAllByUserId(USER_ID)).thenReturn(List.of());
 
         assertEquals(Map.of("streams", List.of()), controller.getRecurringTransactions(jwt, null, null));
-        verifyNoInteractions(plaidApi, recurringStreamSyncService);
-    }
-
-    @Test
-    void backfillsRecurringStreamsWhenAnItemHasNeverBeenSynced() throws IOException {
-        PlaidItem item = new PlaidItem(
-                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
-        when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
-        when(recurringStreamRepository.findAllByUserId(USER_ID)).thenReturn(List.of(
-                storedStream("rent", "checking", "Landlord", new BigDecimal("1450.0"), "MONTHLY",
-                        LocalDate.of(2026, 10, 1), false)));
-
-        List<PlaidController.RecurringStreamResponse> streams =
-                controller.getRecurringTransactions(jwt, null, null).get("streams");
-
-        verify(recurringStreamSyncService).syncItem(item);
-        assertEquals(List.of("rent"), streams.stream()
-                .map(PlaidController.RecurringStreamResponse::streamId)
-                .toList());
     }
 
     @Test
     void capsRecurringStreamsAtTheRequestedLimit() {
-        PlaidItem item = syncedItem();
         List<PlaidRecurringStream> stored = new ArrayList<>();
         for (int i = 1; i <= 12; i++) {
             stored.add(storedStream(
@@ -574,18 +331,11 @@ class PlaidControllerTests {
                     false));
         }
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(item));
         when(recurringStreamRepository.findAllByUserId(USER_ID)).thenReturn(stored);
 
         assertEquals(8, controller.getRecurringTransactions(jwt, null, null).get("streams").size());
         assertEquals(12, controller.getRecurringTransactions(jwt, null, 50).get("streams").size());
         assertEquals(1, controller.getRecurringTransactions(jwt, null, 1).get("streams").size());
-    }
-
-    private static PlaidItem syncedItem() {
-        PlaidItem item = new PlaidItem("item-id", "encrypted", USER_ID);
-        item.markRecurringSynced(Instant.parse("2026-09-22T12:00:00Z"));
-        return item;
     }
 
     private static PlaidRecurringStream storedStream(

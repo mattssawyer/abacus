@@ -12,20 +12,18 @@ import {
   createLinkToken,
   exchangePublicToken,
   getLinkedItemIds,
-  getAccounts,
   getSpendingByCategory,
   getTransactions,
   getRecurringTransactions,
-  type PlaidAccount,
   type PlaidTransaction,
   type RecurringStream,
   type SpendingByCategory,
 } from '../api/PlaidService'
 import { categoryLabel, firstPresent, recurringLabel } from '../api/plaidLabels'
+import { accountLabel, useSelectedAccount } from '../accounts/useSelectedAccount'
 
 const RECENT_TRANSACTION_COUNT = 25
 const RECURRING_STREAM_COUNT = 20
-const ACCOUNT_STORAGE_KEY = 'abacus.selectedAccountId'
 
 const FREQUENCY_LABELS: Record<string, string> = {
   WEEKLY: 'Weekly',
@@ -55,21 +53,29 @@ const CATEGORY_COLORS = [
 const linking = ref(false)
 const linkError = ref('')
 const initialLoading = ref(true)
-const loadingAccounts = ref(false)
 const loadingTransactions = ref(false)
 const loadingRecurring = ref(false)
 const loadingSpending = ref(false)
 const connectionError = ref('')
-const balanceError = ref('')
 const transactionsError = ref('')
 const recurringError = ref('')
 const spendingError = ref('')
 const itemIds = ref<string[]>([])
-const accounts = ref<PlaidAccount[]>([])
 const transactions = ref<PlaidTransaction[]>([])
 const recurring = ref<RecurringStream[]>([])
 const spending = ref<SpendingByCategory>()
-const selectedAccountId = ref<string>()
+const {
+  accounts,
+  selectedAccountId,
+  selectedAccount,
+  loading: loadingAccounts,
+  failed: accountsFailed,
+  load: loadAccountList,
+  select: selectAccount,
+} = useSelectedAccount()
+const balanceError = computed(() =>
+  accountsFailed.value ? 'We couldn’t load your accounts. Please try again.' : '',
+)
 const pendingPublicToken = ref<string>()
 const { user } = useUser()
 const hasConnections = computed(() => itemIds.value.length > 0)
@@ -80,9 +86,6 @@ const greeting = computed(() => {
   const firstName = user.value?.firstName
   return firstName ? `Good ${timeOfDay}, ${firstName}` : `Good ${timeOfDay}`
 })
-const selectedAccount = computed(() =>
-  accounts.value.find((account) => account.account_id === selectedAccountId.value),
-)
 const selectedAccountLabel = computed(() => {
   const account = selectedAccount.value
   return account ? accountLabel(account) : ''
@@ -172,10 +175,6 @@ function formatTransactionDate(date: string) {
   )
 }
 
-function accountLabel(account: PlaidAccount) {
-  return account.mask ? `${account.name} ••${account.mask}` : account.name
-}
-
 function transactionLabel(transaction: PlaidTransaction) {
   return firstPresent(transaction.merchant_name, transaction.name) ?? 'Transaction'
 }
@@ -226,46 +225,13 @@ async function loadConnections() {
 
 async function loadAccounts() {
   if (!itemIds.value.length) return
-  loadingAccounts.value = true
-  balanceError.value = ''
-  try {
-    accounts.value = await getAccounts()
-    if (!disposed) chooseAccount()
-  } catch {
-    if (!disposed) balanceError.value = 'We couldn’t load your accounts. Please try again.'
-  } finally {
-    if (!disposed) loadingAccounts.value = false
-  }
-}
-
-function chooseAccount() {
-  const stillValid = (accountId: string | undefined) =>
-    Boolean(accountId && accounts.value.some((account) => account.account_id === accountId))
-
-  if (stillValid(selectedAccountId.value)) {
-    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value as string)
-    return
-  }
-
-  const remembered = localStorage.getItem(ACCOUNT_STORAGE_KEY) ?? undefined
-  selectedAccountId.value = stillValid(remembered)
-    ? remembered
-    : (accounts.value.find((account) => account.type === 'depository') ?? accounts.value[0])
-        ?.account_id
-
-  if (selectedAccountId.value) {
-    localStorage.setItem(ACCOUNT_STORAGE_KEY, selectedAccountId.value)
-  }
+  await loadAccountList()
 }
 
 function onAccountChange(event: Event) {
   const target = event.target
   if (!(target instanceof HTMLSelectElement)) return
-  const accountId = target.value
-  if (!accountId || accountId === selectedAccountId.value) return
-  if (!accounts.value.some((account) => account.account_id === accountId)) return
-  selectedAccountId.value = accountId
-  localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId)
+  if (!selectAccount(target.value)) return
   void Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
 }
 

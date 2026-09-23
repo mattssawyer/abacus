@@ -2,7 +2,7 @@ package dev.matthewsawyer.finance_dashboard.model;
 
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.UserRepository;
-import dev.matthewsawyer.finance_dashboard.service.PlaidTokenEncryption;
+import dev.matthewsawyer.finance_dashboard.plaid.PlaidTokenEncryption;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

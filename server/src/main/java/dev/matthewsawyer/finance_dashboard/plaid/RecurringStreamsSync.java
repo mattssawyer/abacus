@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.service;
+package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.plaid.client.model.PersonalFinanceCategory;
 import com.plaid.client.model.RecurringTransactionFrequency;
@@ -14,27 +14,21 @@ import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
-import retrofit2.Response;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
-@Service
-public class PlaidRecurringStreamSyncService {
+/** Replaces an item's stored recurring streams with what Plaid currently detects. */
+@Component
+class RecurringStreamsSync {
 
-    private static final Logger log = LoggerFactory.getLogger(PlaidRecurringStreamSyncService.class);
+    private static final Logger log = LoggerFactory.getLogger(RecurringStreamsSync.class);
 
     private static final Set<String> EXCLUDED_CATEGORIES =
             Set.of("INCOME_INTEREST_EARNED", "INCOME_DIVIDENDS");
@@ -44,9 +38,8 @@ public class PlaidRecurringStreamSyncService {
     private final PlaidRecurringStreamRepository streamRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
-    private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
 
-    public PlaidRecurringStreamSyncService(
+    RecurringStreamsSync(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
             PlaidRecurringStreamRepository streamRepository,
@@ -60,23 +53,7 @@ public class PlaidRecurringStreamSyncService {
         this.transactionTemplate = transactionTemplate;
     }
 
-    @Async("plaidSyncExecutor")
-    public void syncItemAsync(String itemId) {
-        synchronized (itemLocks.computeIfAbsent(itemId, key -> new Object())) {
-            try {
-                PlaidItem item = plaidItemRepository.findById(itemId).orElse(null);
-                if (item == null) {
-                    log.warn("Skipping recurring stream sync for unknown item {}", itemId);
-                    return;
-                }
-                syncItem(item);
-            } catch (IOException | RuntimeException e) {
-                log.warn("Recurring stream sync failed for item {}", itemId, e);
-            }
-        }
-    }
-
-    public void syncItem(PlaidItem item) throws IOException {
+    void sync(PlaidItem item) {
         String itemId = item.getItemId();
         log.info("Starting recurring stream sync for item {}", itemId);
 
@@ -86,14 +63,8 @@ public class PlaidRecurringStreamSyncService {
                 .options(new TransactionsRecurringGetRequestOptions()
                         .includePersonalFinanceCategory(true));
 
-        Response<TransactionsRecurringGetResponse> response =
-                plaidApi.transactionsRecurringGet(request).execute();
-        if (!response.isSuccessful() || response.body() == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY, "Plaid recurring transactions get failed");
-        }
-
-        TransactionsRecurringGetResponse body = response.body();
+        TransactionsRecurringGetResponse body = PlaidCalls.execute(
+                plaidApi.transactionsRecurringGet(request), "recurring transactions get");
         List<PlaidRecurringStream> streams = new ArrayList<>();
         streams.addAll(mapStreams(body.getOutflowStreams(), item, false));
         streams.addAll(mapStreams(body.getInflowStreams(), item, true));
@@ -103,8 +74,7 @@ public class PlaidRecurringStreamSyncService {
             if (!streams.isEmpty()) {
                 streamRepository.saveAll(streams);
             }
-            item.markRecurringSynced(Instant.now());
-            plaidItemRepository.save(item);
+            plaidItemRepository.markRecurringSynced(itemId, Instant.now());
         });
 
         log.info("Stored {} recurring streams for item {}", streams.size(), itemId);
@@ -116,7 +86,7 @@ public class PlaidRecurringStreamSyncService {
             boolean isInflow
     ) {
         return Objects.requireNonNullElse(streams, List.<TransactionStream>of()).stream()
-                .filter(PlaidRecurringStreamSyncService::isRecurringPayment)
+                .filter(RecurringStreamsSync::isRecurringPayment)
                 .map(stream -> toEntity(stream, item, isInflow))
                 .filter(stream -> stream != null)
                 .toList();

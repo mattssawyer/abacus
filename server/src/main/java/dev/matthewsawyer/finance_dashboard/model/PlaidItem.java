@@ -60,12 +60,4 @@ public class PlaidItem {
     public Instant getRecurringSyncedAt() {
         return recurringSyncedAt;
     }
-
-    public void updateTransactionsCursor(String transactionsCursor) {
-        this.transactionsCursor = transactionsCursor;
-    }
-
-    public void markRecurringSynced(Instant recurringSyncedAt) {
-        this.recurringSyncedAt = recurringSyncedAt;
-    }
 }

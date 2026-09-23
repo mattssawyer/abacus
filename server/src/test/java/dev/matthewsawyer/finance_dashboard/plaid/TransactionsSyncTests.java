@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.service;
+package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.plaid.client.model.AccountBalance;
 import com.plaid.client.model.AccountBase;
@@ -24,10 +24,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.HttpStatus;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.server.ResponseStatusException;
+import org.springframework.test.util.ReflectionTestUtils;
 import retrofit2.Call;
 import retrofit2.Response;
 
@@ -48,7 +47,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-class PlaidTransactionSyncServiceTests {
+class TransactionsSyncTests {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
@@ -72,12 +71,12 @@ class PlaidTransactionSyncServiceTests {
 
     private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
             TestPlaidKeysets.create());
-    private PlaidTransactionSyncService service;
+    private TransactionsSync sync;
     private PlaidItem item;
 
     @BeforeEach
     void setUp() {
-        service = new PlaidTransactionSyncService(
+        sync = new TransactionsSync(
                 plaidApi,
                 plaidItemRepository,
                 accountRepository,
@@ -114,7 +113,7 @@ class PlaidTransactionSyncServiceTests {
                 .nextCursor("cursor-1")
                 .hasMore(false));
 
-        assertEquals(1, service.syncItem(item));
+        assertEquals(1, sync.sync(item));
 
         ArgumentCaptor<TransactionsSyncRequest> requestCaptor =
                 ArgumentCaptor.forClass(TransactionsSyncRequest.class);
@@ -133,8 +132,7 @@ class PlaidTransactionSyncServiceTests {
         assertEquals("in store", saved.getPaymentChannel());
         assertEquals("FOOD_AND_DRINK_COFFEE", saved.getPersonalFinanceCategoryDetailed());
 
-        assertEquals("cursor-1", item.getTransactionsCursor());
-        verify(plaidItemRepository).save(item);
+        verify(plaidItemRepository).updateTransactionsCursor("item-id", "cursor-1");
     }
 
     @Test
@@ -152,7 +150,7 @@ class PlaidTransactionSyncServiceTests {
                 .nextCursor("cursor-1")
                 .hasMore(false));
 
-        service.syncItem(item);
+        sync.sync(item);
 
         ArgumentCaptor<PlaidAccount> accountCaptor = ArgumentCaptor.forClass(PlaidAccount.class);
         verify(accountRepository).save(accountCaptor.capture());
@@ -183,22 +181,23 @@ class PlaidTransactionSyncServiceTests {
                         .nextCursor("cursor-2")
                         .hasMore(false)));
 
-        assertEquals(2, service.syncItem(item));
+        assertEquals(2, sync.sync(item));
 
         ArgumentCaptor<TransactionsSyncRequest> requestCaptor =
                 ArgumentCaptor.forClass(TransactionsSyncRequest.class);
         verify(plaidApi, org.mockito.Mockito.times(2)).transactionsSync(requestCaptor.capture());
         assertNull(requestCaptor.getAllValues().get(0).getCursor());
         assertEquals("cursor-1", requestCaptor.getAllValues().get(1).getCursor());
-        assertEquals("cursor-2", item.getTransactionsCursor());
+        verify(plaidItemRepository).updateTransactionsCursor("item-id", "cursor-1");
+        verify(plaidItemRepository).updateTransactionsCursor("item-id", "cursor-2");
     }
 
     @Test
     void resumesFromStoredCursor() throws IOException {
-        item.updateTransactionsCursor("stored-cursor");
+        ReflectionTestUtils.setField(item, "transactionsCursor", "stored-cursor");
         stubSync(new TransactionsSyncResponse().nextCursor("cursor-2").hasMore(false));
 
-        assertEquals(0, service.syncItem(item));
+        assertEquals(0, sync.sync(item));
 
         ArgumentCaptor<TransactionsSyncRequest> requestCaptor =
                 ArgumentCaptor.forClass(TransactionsSyncRequest.class);
@@ -220,69 +219,28 @@ class PlaidTransactionSyncServiceTests {
                 .nextCursor("cursor-2")
                 .hasMore(false));
 
-        assertEquals(2, service.syncItem(item));
+        assertEquals(2, sync.sync(item));
 
         assertTrue(captureSavedTransactions().get(0).isPending());
         verify(transactionRepository).deleteAllByItemIdAndTransactionIdIn("item-id", List.of("txn-old"));
     }
 
     @Test
-    void failsWithBadGatewayWhenPlaidRejectsSync() throws IOException {
+    void failsWithoutAdvancingTheCursorWhenPlaidRejectsSync() throws IOException {
         when(plaidApi.transactionsSync(any(TransactionsSyncRequest.class))).thenReturn(syncCall);
         when(syncCall.execute()).thenReturn(
                 Response.error(500, ResponseBody.create("{}", MediaType.get("application/json"))));
 
-        ResponseStatusException exception = assertThrows(
-                ResponseStatusException.class, () -> service.syncItem(item));
+        assertThrows(PlaidRequestException.class, () -> sync.sync(item));
 
-        assertEquals(HttpStatus.BAD_GATEWAY, exception.getStatusCode());
-        assertNull(item.getTransactionsCursor());
-        verifyNoMoreInteractions(transactionRepository);
-    }
-
-    @Test
-    void asyncSyncStoresTransactionsForTheStoredItem() throws IOException {
-        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
-        stubSync(new TransactionsSyncResponse()
-                .added(List.of(new Transaction()
-                        .transactionId("txn-1")
-                        .accountId("account-1")
-                        .amount(1.0)
-                        .date(LocalDate.of(2026, 9, 1))))
-                .nextCursor("cursor-1")
-                .hasMore(false));
-
-        service.syncItemAsync("item-id");
-
-        assertEquals("txn-1", captureSavedTransactions().get(0).getTransactionId());
-        assertEquals("cursor-1", item.getTransactionsCursor());
-    }
-
-    @Test
-    void asyncSyncSwallowsFailuresSoPlaidIsNotRetriedForever() throws IOException {
-        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(item));
-        when(plaidApi.transactionsSync(any(TransactionsSyncRequest.class))).thenReturn(syncCall);
-        when(syncCall.execute()).thenThrow(new IOException("Plaid unreachable"));
-
-        service.syncItemAsync("item-id");
-
-        verify(transactionRepository, org.mockito.Mockito.never()).saveAll(any());
-    }
-
-    @Test
-    void asyncSyncIgnoresItemsThatAreNoLongerStored() {
-        when(plaidItemRepository.findById("missing-item")).thenReturn(Optional.empty());
-
-        service.syncItemAsync("missing-item");
-
-        verifyNoMoreInteractions(plaidApi);
+        verifyNoMoreInteractions(transactionRepository, plaidItemRepository);
     }
 
     @Test
     void refusesPlaintextStoredTokenBeforeCallingPlaid() {
         PlaidItem plaintextItem = new PlaidItem("item-id", "access-token", USER_ID);
 
-        assertThrows(IllegalStateException.class, () -> service.syncItem(plaintextItem));
+        assertThrows(IllegalStateException.class, () -> sync.sync(plaintextItem));
 
         verifyNoMoreInteractions(plaidApi);
     }
