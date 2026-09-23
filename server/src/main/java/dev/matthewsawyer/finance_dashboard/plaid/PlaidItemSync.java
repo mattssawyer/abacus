@@ -1,7 +1,7 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,7 +14,7 @@ import java.util.concurrent.Executor;
 
 /**
  * Keeps a Plaid item's stored accounts, transactions and recurring streams up to date, and
- * queues new transactions for plan part sorting.
+ * queues new transactions for sorting.
  *
  * <p>Syncs of the same item never overlap: concurrent syncs would race each other's
  * transactions cursor. Failures are logged rather than thrown, because Plaid notifies again on
@@ -33,7 +33,7 @@ public class PlaidItemSync {
     private final PlaidItemRepository plaidItemRepository;
     private final TransactionsSync transactionsSync;
     private final RecurringStreamsSync recurringStreamsSync;
-    private final PlanPartSorting planPartSorting;
+    private final BucketSorting bucketSorting;
     private final Executor executor;
     private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
 
@@ -41,13 +41,13 @@ public class PlaidItemSync {
             PlaidItemRepository plaidItemRepository,
             TransactionsSync transactionsSync,
             RecurringStreamsSync recurringStreamsSync,
-            PlanPartSorting planPartSorting,
+            BucketSorting bucketSorting,
             @Qualifier("plaidSyncExecutor") Executor executor
     ) {
         this.plaidItemRepository = plaidItemRepository;
         this.transactionsSync = transactionsSync;
         this.recurringStreamsSync = recurringStreamsSync;
-        this.planPartSorting = planPartSorting;
+        this.bucketSorting = bucketSorting;
         this.executor = executor;
     }
 
@@ -90,7 +90,7 @@ public class PlaidItemSync {
             }
             if (transactions) {
                 run("Transactions", item, () -> transactionsSync.sync(item));
-                planPartSorting.sortLater(item.getUserId());
+                bucketSorting.sortLater(item.getUserId());
             }
             run("Recurring stream", item, () -> recurringStreamsSync.sync(item));
         }

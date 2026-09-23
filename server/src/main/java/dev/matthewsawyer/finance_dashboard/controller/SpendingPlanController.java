@@ -6,8 +6,8 @@ import dev.matthewsawyer.finance_dashboard.model.SpendingPlanBucket;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanItem;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanLine;
 import dev.matthewsawyer.finance_dashboard.model.User;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanLines;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.PlanLines;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.service.SpendingPlanService;
 import dev.matthewsawyer.finance_dashboard.service.UserService;
@@ -39,18 +39,18 @@ public class SpendingPlanController {
 
     private final SpendingPlanService planService;
     private final PlaidAccountRepository accountRepository;
-    private final PlanPartSorting planPartSorting;
+    private final BucketSorting bucketSorting;
     private final UserService userService;
 
     public SpendingPlanController(
             SpendingPlanService planService,
             PlaidAccountRepository accountRepository,
-            PlanPartSorting planPartSorting,
+            BucketSorting bucketSorting,
             UserService userService
     ) {
         this.planService = planService;
         this.accountRepository = accountRepository;
-        this.planPartSorting = planPartSorting;
+        this.bucketSorting = bucketSorting;
         this.userService = userService;
     }
 
@@ -81,7 +81,7 @@ public class SpendingPlanController {
         PlanLines linesBefore = planService.find(user.getId(), PlanLines::of).orElse(PlanLines.NONE);
         SpendingPlanResponse saved = planService.save(
                 user.getId(), accountId, takeHome, bufferPercent, lines, SpendingPlanResponse::from);
-        planPartSorting.planSaved(user.getId(), linesBefore);
+        bucketSorting.planSaved(user.getId(), linesBefore);
         return saved;
     }
 

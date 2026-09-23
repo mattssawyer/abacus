@@ -1,7 +1,7 @@
-package dev.matthewsawyer.finance_dashboard.planpart;
+package dev.matthewsawyer.finance_dashboard.sorting;
 
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.service.SpendingPlanService;
 import org.slf4j.Logger;
@@ -18,16 +18,16 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
- * Keeps each transaction's plan part current. Sorting asks TypeSafe about every transaction, so
+ * Keeps each transaction's bucket current. Sorting asks TypeSafe about every transaction, so
  * it runs off the caller's thread, and its jobs run one at a time so an older job can never
  * overwrite a newer one's answers.
  *
  * <p>Failures leave transactions unsorted rather than guessing; the next sort retries them.
  */
 @Service
-public class PlanPartSorting {
+public class BucketSorting {
 
-    private static final Logger log = LoggerFactory.getLogger(PlanPartSorting.class);
+    private static final Logger log = LoggerFactory.getLogger(BucketSorting.class);
 
     /**
      * Plaid categories that are never plan money: pay and other money coming in, and card
@@ -39,16 +39,16 @@ public class PlanPartSorting {
 
     private final PlaidTransactionRepository transactionRepository;
     private final SpendingPlanService planService;
-    private final PlanPartClassifier classifier;
+    private final BucketClassifier classifier;
     private final Executor jobExecutor;
     private final Executor classifyExecutor;
 
-    PlanPartSorting(
+    BucketSorting(
             PlaidTransactionRepository transactionRepository,
             SpendingPlanService planService,
-            PlanPartClassifier classifier,
-            @Qualifier("planPartJobExecutor") Executor jobExecutor,
-            @Qualifier("planPartClassifyExecutor") Executor classifyExecutor
+            BucketClassifier classifier,
+            @Qualifier("sortingJobExecutor") Executor jobExecutor,
+            @Qualifier("sortingClassifyExecutor") Executor classifyExecutor
     ) {
         this.transactionRepository = transactionRepository;
         this.planService = planService;
@@ -57,7 +57,7 @@ public class PlanPartSorting {
         this.classifyExecutor = classifyExecutor;
     }
 
-    /** Queues sorting of the user's transactions that don't have a plan part yet. */
+    /** Queues sorting of the user's transactions that don't have a bucket yet. */
     public void sortLater(UUID userId) {
         queue(userId, () -> run(userId, false));
     }
@@ -80,7 +80,7 @@ public class PlanPartSorting {
         try {
             jobExecutor.execute(job);
         } catch (RejectedExecutionException e) {
-            log.warn("Plan part sorting queue is full; skipping a sort for user {}", userId);
+            log.warn("Sorting queue is full; skipping a sort for user {}", userId);
         }
     }
 
@@ -88,13 +88,13 @@ public class PlanPartSorting {
         try {
             sort(userId, includeSorted);
         } catch (RuntimeException e) {
-            log.warn("Plan part sorting failed for user {}", userId, e);
+            log.warn("Sorting failed for user {}", userId, e);
         }
     }
 
     private void sort(UUID userId, boolean includeSorted) {
         if (!classifier.isAvailable()) {
-            log.info("Skipping plan part sorting for user {}: no TypeSafe API key is set", userId);
+            log.info("Skipping sorting for user {}: no TypeSafe API key is set", userId);
             return;
         }
         List<PlaidTransaction> toSort =
@@ -104,7 +104,7 @@ public class PlanPartSorting {
         }
 
         PlanLines plan = planLines(userId);
-        List<CompletableFuture<PlanPart>> answers = toSort.stream()
+        List<CompletableFuture<Bucket>> answers = toSort.stream()
                 .map(transaction -> CompletableFuture.supplyAsync(
                         () -> classifier.classify(transaction, plan), classifyExecutor))
                 .toList();
@@ -114,9 +114,9 @@ public class PlanPartSorting {
         RuntimeException firstFailure = null;
         for (int i = 0; i < toSort.size(); i++) {
             PlaidTransaction transaction = toSort.get(i);
-            PlanPart part;
+            Bucket bucket;
             try {
-                part = answers.get(i).join();
+                bucket = answers.get(i).join();
             } catch (CompletionException e) {
                 failed++;
                 if (firstFailure == null) {
@@ -124,16 +124,16 @@ public class PlanPartSorting {
                 }
                 continue;
             }
-            if (part != transaction.getPlanPart()) {
-                changed += transactionRepository.updatePlanPart(
-                        transaction.getTransactionId(), transaction.getUpdatedAt(), part);
+            if (bucket != transaction.getBucket()) {
+                changed += transactionRepository.updateBucket(
+                        transaction.getTransactionId(), transaction.getUpdatedAt(), bucket);
             }
         }
 
-        log.info("Sorted {} transactions into plan parts for user {}: {} changed, {} failed",
+        log.info("Sorted {} transactions into buckets for user {}: {} changed, {} failed",
                 toSort.size(), userId, changed, failed);
         if (firstFailure != null) {
-            log.warn("First plan part sorting failure for user {}", userId, firstFailure);
+            log.warn("First sorting failure for user {}", userId, firstFailure);
         }
     }
 

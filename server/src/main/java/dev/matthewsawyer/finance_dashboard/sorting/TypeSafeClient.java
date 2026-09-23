@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.planpart;
+package dev.matthewsawyer.finance_dashboard.sorting;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.beans.factory.annotation.Value;

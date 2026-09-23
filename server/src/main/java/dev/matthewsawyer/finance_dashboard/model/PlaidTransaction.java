@@ -71,12 +71,12 @@ public class PlaidTransaction {
     private String personalFinanceCategoryDetailed;
 
     /**
-     * Set by plan part sorting, never by Plaid. Sync saves Plaid's copy over the stored one, which
+     * Set by sorting, never by Plaid. Sync saves Plaid's copy over the stored one, which
      * clears this whenever Plaid changes a transaction so it gets sorted again.
      */
     @Enumerated(EnumType.STRING)
-    @Column(name = "plan_part", length = 32)
-    private PlanPart planPart;
+    @Column(name = "bucket", length = 32)
+    private Bucket bucket;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -234,8 +234,8 @@ public class PlaidTransaction {
         return personalFinanceCategoryDetailed;
     }
 
-    public PlanPart getPlanPart() {
-        return planPart;
+    public Bucket getBucket() {
+        return bucket;
     }
 
     public Instant getCreatedAt() {

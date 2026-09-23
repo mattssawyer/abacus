@@ -28,6 +28,14 @@ export interface PlaidTransaction {
   logo_url: string | null
   pending: boolean
   category: string | null
+  /** Null until sorting reaches it. NOT_COUNTED is money moved between own accounts. */
+  bucket: Exclude<Bucket, 'UNSORTED'> | 'NOT_COUNTED' | null
+}
+
+export interface TransactionPage {
+  transactions: PlaidTransaction[]
+  /** How many transactions there are across all pages. */
+  total: number
 }
 
 export interface RecurringStream {
@@ -54,22 +62,22 @@ export interface CategorySpend {
   transactions: PlaidTransaction[]
 }
 
-/** UNSORTED holds transactions plan part sorting hasn't reached yet. */
-export type PlanPart = 'FIXED_COSTS' | 'GUILT_FREE' | 'SAVINGS' | 'INVESTMENTS' | 'UNSORTED'
+/** UNSORTED holds transactions sorting hasn't reached yet. */
+export type Bucket = 'FIXED_COSTS' | 'GUILT_FREE' | 'SAVINGS' | 'INVESTMENTS' | 'UNSORTED'
 
-export interface PartSpend {
-  part: PlanPart
+export interface BucketSpend {
+  bucket: Bucket
   amount: number
   /** Largest first. */
   categories: CategorySpend[]
 }
 
-export interface SpendingByPlanPart {
+export interface SpendingByBucket {
   start: string
   end: string
   total: number
   /** In plan order, with unsorted transactions last. */
-  parts: PartSpend[]
+  buckets: BucketSpend[]
 }
 
 interface AccountsResponse {
@@ -96,8 +104,8 @@ export async function getAccounts(): Promise<PlaidAccount[]> {
   return data.accounts
 }
 
-export async function getSpendingByPlanPart(accountId?: string): Promise<SpendingByPlanPart> {
-  const { data } = await apiClient.get<SpendingByPlanPart>('/plaid/spending/by-plan-part', {
+export async function getSpendingByBucket(accountId?: string): Promise<SpendingByBucket> {
+  const { data } = await apiClient.get<SpendingByBucket>('/plaid/spending/by-bucket', {
     params: accountId ? { account_id: accountId } : undefined,
   })
   return data
@@ -112,6 +120,18 @@ export async function getTransactions(limit = 25, accountId?: string): Promise<P
   )
 
   return data.transactions
+}
+
+/** One page of transactions, newest first. Pages start at 0 and hold at most 100. */
+export async function getTransactionPage(
+  page: number,
+  pageSize: number,
+  accountId?: string,
+): Promise<TransactionPage> {
+  const { data } = await apiClient.get<TransactionPage>('/plaid/transactions', {
+    params: { page, limit: pageSize, ...(accountId ? { account_id: accountId } : {}) },
+  })
+  return data
 }
 
 export async function getRecurringTransactions(

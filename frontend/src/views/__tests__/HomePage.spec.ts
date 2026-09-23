@@ -8,13 +8,14 @@ import {
   exchangePublicToken,
   getAccounts,
   getLinkedItemIds,
-  getSpendingByPlanPart,
+  getSpendingByBucket,
   getTransactions,
+  getTransactionPage,
   getRecurringTransactions,
   type PlaidAccount,
   type PlaidTransaction,
   type RecurringStream,
-  type SpendingByPlanPart,
+  type SpendingByBucket,
 } from '../../api/PlaidService'
 
 vi.mock('../../api/PlaidService', () => ({
@@ -22,8 +23,9 @@ vi.mock('../../api/PlaidService', () => ({
   exchangePublicToken: vi.fn(),
   getAccounts: vi.fn(),
   getLinkedItemIds: vi.fn(),
-  getSpendingByPlanPart: vi.fn(),
+  getSpendingByBucket: vi.fn(),
   getTransactions: vi.fn(),
+  getTransactionPage: vi.fn(),
   getRecurringTransactions: vi.fn(),
 }))
 const clerk = vi.hoisted(() => ({
@@ -69,15 +71,16 @@ const coffee: PlaidTransaction = {
   logo_url: null,
   pending: false,
   category: 'FOOD_AND_DRINK',
+  bucket: 'GUILT_FREE',
 }
 
-const spending: SpendingByPlanPart = {
+const spending: SpendingByBucket = {
   start: '2026-09-01',
   end: '2026-09-30',
   total: 1844.5,
-  parts: [
+  buckets: [
     {
-      part: 'FIXED_COSTS',
+      bucket: 'FIXED_COSTS',
       amount: 1532.5,
       categories: [
         {
@@ -116,14 +119,14 @@ const spending: SpendingByPlanPart = {
       ],
     },
     {
-      part: 'GUILT_FREE',
+      bucket: 'GUILT_FREE',
       amount: 12,
       categories: [
         { category: 'FOOD_AND_DRINK', amount: 12, transactions: [{ ...coffee, amount: 12 }] },
       ],
     },
     {
-      part: 'SAVINGS',
+      bucket: 'SAVINGS',
       amount: 300,
       categories: [
         {
@@ -201,7 +204,7 @@ beforeEach(() => {
   vi.mocked(getLinkedItemIds).mockResolvedValue([])
   vi.mocked(getAccounts).mockResolvedValue([checking])
   vi.mocked(getTransactions).mockResolvedValue([coffee])
-  vi.mocked(getSpendingByPlanPart).mockResolvedValue(spending)
+  vi.mocked(getSpendingByBucket).mockResolvedValue(spending)
   vi.mocked(getRecurringTransactions).mockResolvedValue([rent])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
@@ -396,10 +399,32 @@ describe('homepage recent transactions', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.text()).toContain('We couldn’t load your recent transactions.')
   })
+
+  it('opens every transaction for the selected account', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getTransactionPage).mockResolvedValue({ transactions: [coffee], total: 1 })
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(getTransactionPage).not.toHaveBeenCalled()
+    await button(wrapper, 'View all').trigger('click')
+    await flushPromises()
+
+    expect(getTransactionPage).toHaveBeenCalledWith(0, 50, 'checking')
+  })
+
+  it('offers no full view until there are transactions', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getTransactions).mockResolvedValue([])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((element) => element.text() === 'View all')).toBe(false)
+  })
 })
 
 describe('homepage spending breakdown', () => {
-  it('charts each plan part', async () => {
+  it('charts each bucket', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     const wrapper = mountHome()
     await flushPromises()
@@ -407,12 +432,12 @@ describe('homepage spending breakdown', () => {
     const slices = wrapper.findAll('.chart-stub li').map((slice) => slice.text())
     expect(slices).toEqual(['Fixed costs: 1532.5', 'Guilt-free spending: 12', 'Savings: 300'])
     expect(wrapper.get('#spending-heading').text()).toContain('September')
-    const parts = wrapper.findAll('.spending-legend > li > button').map((row) => row.text())
-    expect(parts).toEqual(['Fixed costs$1,532.50', 'Guilt-free spending$12.00', 'Savings$300.00'])
+    const buckets = wrapper.findAll('.spending-legend > li > button').map((row) => row.text())
+    expect(buckets).toEqual(['Fixed costs$1,532.50', 'Guilt-free spending$12.00', 'Savings$300.00'])
     expect(wrapper.get('.spending-total-amount').text()).toBe('$1,845')
   })
 
-  it('breaks each part down by Plaid category, open at first', async () => {
+  it('breaks each bucket down by Plaid category, open at first', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     const wrapper = mountHome()
     await flushPromises()
@@ -459,12 +484,12 @@ describe('homepage spending breakdown', () => {
 
   it('labels categories Plaid adds later without a hardcoded name', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByPlanPart).mockResolvedValue({
+    vi.mocked(getSpendingByBucket).mockResolvedValue({
       ...spending,
       total: 40,
-      parts: [
+      buckets: [
         {
-          part: 'GUILT_FREE',
+          bucket: 'GUILT_FREE',
           amount: 40,
           categories: [
             { category: 'DIGITAL_ASSETS', amount: 40, transactions: [{ ...coffee, amount: 40 }] },
@@ -481,12 +506,12 @@ describe('homepage spending breakdown', () => {
   it('checks back until new transactions are sorted', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByPlanPart).mockResolvedValueOnce({
+    vi.mocked(getSpendingByBucket).mockResolvedValueOnce({
       ...spending,
-      parts: [
-        ...spending.parts,
+      buckets: [
+        ...spending.buckets,
         {
-          part: 'UNSORTED',
+          bucket: 'UNSORTED',
           amount: 45,
           categories: [
             { category: 'TRAVEL', amount: 45, transactions: [{ ...coffee, amount: 45 }] },
@@ -502,14 +527,14 @@ describe('homepage spending breakdown', () => {
     await vi.advanceTimersByTimeAsync(4000)
     await flushPromises()
 
-    expect(getSpendingByPlanPart).toHaveBeenCalledTimes(2)
+    expect(getSpendingByBucket).toHaveBeenCalledTimes(2)
     expect(wrapper.get('.spending-legend').text()).not.toContain('Not sorted yet')
     vi.useRealTimers()
   })
 
   it('shows an empty state instead of a blank chart', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByPlanPart).mockResolvedValue({ ...spending, total: 0, parts: [] })
+    vi.mocked(getSpendingByBucket).mockResolvedValue({ ...spending, total: 0, buckets: [] })
     const wrapper = mountHome()
     await flushPromises()
 
@@ -519,7 +544,7 @@ describe('homepage spending breakdown', () => {
 
   it('keeps the rest of the dashboard working when the breakdown fails', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
-    vi.mocked(getSpendingByPlanPart).mockRejectedValueOnce(new Error('Server unavailable'))
+    vi.mocked(getSpendingByBucket).mockRejectedValueOnce(new Error('Server unavailable'))
     const wrapper = mountHome()
     await flushPromises()
 
@@ -547,7 +572,7 @@ describe('homepage account selector', () => {
     expect(wrapper.get('.balance-amount').text()).toBe('$1,250.50')
     expect(wrapper.get('[aria-label="Account"]').text()).toContain('Checking ••1234')
     expect(getTransactions).toHaveBeenLastCalledWith(25, 'checking')
-    expect(getSpendingByPlanPart).toHaveBeenLastCalledWith('checking')
+    expect(getSpendingByBucket).toHaveBeenLastCalledWith('checking')
     expect(getRecurringTransactions).toHaveBeenLastCalledWith('checking', 20)
 
     await wrapper.get('[aria-label="Account"]').setValue('savings')
@@ -555,7 +580,7 @@ describe('homepage account selector', () => {
 
     expect(wrapper.get('.balance-amount').text()).toBe('$8,400.00')
     expect(getTransactions).toHaveBeenLastCalledWith(25, 'savings')
-    expect(getSpendingByPlanPart).toHaveBeenLastCalledWith('savings')
+    expect(getSpendingByBucket).toHaveBeenLastCalledWith('savings')
     expect(getRecurringTransactions).toHaveBeenLastCalledWith('savings', 20)
   })
 

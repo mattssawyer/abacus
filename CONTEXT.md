@@ -35,12 +35,12 @@ _Avoid_: Refresh, backfill, import
 ### Spending plan
 
 **Spending plan**:
-A user's monthly Conscious Spending Plan (Ramit Sethi's method): take-home pay split across buckets, with whatever is left as guilt-free spending. A user has at most one saved plan.
+A user's monthly Conscious Spending Plan (Ramit Sethi's method): take-home pay split across four buckets, with whatever is left as guilt-free spending. A user has at most one saved plan.
 _Avoid_: Budget
 
 **Bucket**:
-One of the plan's three planned categories: fixed costs, investments or savings. Guilt-free spending is what remains after them, not a bucket.
-_Avoid_: Category (that's Plaid's word for transactions)
+One of the plan's four places for money: fixed costs, investments, savings or guilt-free spending. The first three hold lines; guilt-free spending is what's left after them. Each transaction's money lands in one bucket, except money that only moves between the user's own accounts, pay coming in, and credit card payments, which don't count toward any.
+_Avoid_: Plan part, category (that's Plaid's word for transactions)
 
 **Line**:
 A named amount within a bucket, such as "Rent/mortgage" or "401(k)".
@@ -67,21 +67,17 @@ A percentage added on top of fixed costs to cover forgotten and rising costs. It
 _Avoid_: Miscellaneous, padding
 
 **Guilt-free spending**:
-Plan income minus the three buckets. It's negative when the plan spends more than it has.
+Plan income minus the other three buckets. It's negative when the plan spends more than it has.
 _Avoid_: Discretionary, leftover, fun money
 
 **Target**:
-The suggested share of plan income for a bucket or for guilt-free spending, such as 50–60% for fixed costs.
+The suggested share of plan income for a bucket, such as 50–60% for fixed costs.
 _Avoid_: Goal, limit
 
 **Flagged**:
 A plan outcome that needs the user's attention: fixed costs above their target, or guilt-free spending below zero.
 _Avoid_: Over budget, warning
 
-**Plan part**:
-Where a transaction's money went in the spending plan: fixed costs, guilt-free spending, savings or investments. Unlike a bucket, it includes guilt-free spending. Money that only moves between the user's own accounts, pay coming in, and credit card payments don't count toward any part.
-_Avoid_: Bucket (guilt-free isn't one), category (that's Plaid's word)
-
 **Sorting**:
-Deciding each transaction's plan part, using the user's plan lines as a guide, so a streaming charge lands in fixed costs when the plan lists subscriptions there. New transactions are sorted after each item sync, and every transaction is sorted again when a save changes the plan's lines.
+Deciding each transaction's bucket, using the user's plan lines as a guide, so a streaming charge lands in fixed costs when the plan lists subscriptions there. New transactions are sorted after each item sync, and every transaction is sorted again when a save changes the plan's lines.
 _Avoid_: Categorizing, classifying

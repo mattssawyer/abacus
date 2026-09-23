@@ -1,4 +1,4 @@
-package dev.matthewsawyer.finance_dashboard.planpart;
+package dev.matthewsawyer.finance_dashboard.sorting;
 
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlan;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanBucket;

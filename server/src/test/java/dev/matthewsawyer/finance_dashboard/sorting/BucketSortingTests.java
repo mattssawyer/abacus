@@ -1,7 +1,7 @@
-package dev.matthewsawyer.finance_dashboard.planpart;
+package dev.matthewsawyer.finance_dashboard.sorting;
 
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlan;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanBucket;
 import dev.matthewsawyer.finance_dashboard.model.SpendingPlanLine;
@@ -38,35 +38,35 @@ import static org.mockito.Mockito.when;
         "PLAID_SANDBOX_SECRET=test-secret"
 })
 @Transactional
-class PlanPartSortingTests {
+class BucketSortingTests {
 
     @Autowired private PlaidTransactionRepository transactions;
     @Autowired private SpendingPlanService planService;
     @Autowired private EntityManager entityManager;
 
     private final TypeSafeClient typeSafe = mock(TypeSafeClient.class);
-    private PlanPartSorting sorting;
+    private BucketSorting sorting;
     private UUID userId;
 
     @BeforeEach
     void setUp() {
         // Jobs and questions run inline so each test sees the finished sort.
-        sorting = new PlanPartSorting(
-                transactions, planService, new PlanPartClassifier(typeSafe), Runnable::run, Runnable::run);
+        sorting = new BucketSorting(
+                transactions, planService, new BucketClassifier(typeSafe), Runnable::run, Runnable::run);
         userId = UUID.randomUUID();
         when(typeSafe.isConfigured()).thenReturn(true);
     }
 
     @Test
-    void storesThePartTypeSafeChooses() {
+    void storesTheBucketTypeSafeChooses() {
         store(transaction("rent", "Rent ACH", "RENT_AND_UTILITIES", "RENT_AND_UTILITIES_RENT"));
         store(transaction("coffee", "Starbucks", "FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"));
         answer(Map.of("Rent ACH", "fixed_costs", "Starbucks", "guilt_free"));
 
         sorting.sortLater(userId);
 
-        assertEquals(PlanPart.FIXED_COSTS, planPart("rent"));
-        assertEquals(PlanPart.GUILT_FREE, planPart("coffee"));
+        assertEquals(Bucket.FIXED_COSTS, bucket("rent"));
+        assertEquals(Bucket.GUILT_FREE, bucket("coffee"));
     }
 
     @Test
@@ -79,8 +79,8 @@ class PlanPartSortingTests {
         sorting.sortLater(userId);
 
         verify(typeSafe, never()).choose(any(), any());
-        assertNull(planPart("pay"));
-        assertNull(planPart("card"));
+        assertNull(bucket("pay"));
+        assertNull(bucket("card"));
     }
 
     @Test
@@ -91,7 +91,7 @@ class PlanPartSortingTests {
 
         sorting.sortLater(userId);
 
-        PlanPartClassifier.State state = askedState();
+        BucketClassifier.State state = askedState();
         assertEquals(List.of("Subscriptions"), state.spendingPlan().fixedCosts().lines());
         assertEquals("entertainment: tv and movies", state.transaction().plaidCategory());
         assertEquals(new BigDecimal("15.49"), state.transaction().amountUsd());
@@ -106,7 +106,7 @@ class PlanPartSortingTests {
         sorting.sortLater(userId);
 
         assertNull(askedState().spendingPlan());
-        assertEquals(PlanPart.GUILT_FREE, planPart("netflix"));
+        assertEquals(Bucket.GUILT_FREE, bucket("netflix"));
     }
 
     @Test
@@ -122,8 +122,8 @@ class PlanPartSortingTests {
 
         sorting.sortLater(userId);
 
-        assertEquals(PlanPart.FIXED_COSTS, planPart("rent"));
-        assertNull(planPart("coffee"));
+        assertEquals(Bucket.FIXED_COSTS, bucket("rent"));
+        assertNull(bucket("coffee"));
     }
 
     @Test
@@ -134,7 +134,7 @@ class PlanPartSortingTests {
         sorting.sortLater(userId);
 
         verify(typeSafe, never()).choose(any(), any());
-        assertNull(planPart("rent"));
+        assertNull(bucket("rent"));
     }
 
     @Test
@@ -154,7 +154,7 @@ class PlanPartSortingTests {
 
         sorting.sortLater(userId);
 
-        assertNull(planPart("coffee"));
+        assertNull(bucket("coffee"));
     }
 
     @Test
@@ -167,7 +167,7 @@ class PlanPartSortingTests {
         answer(Map.of("Netflix", "fixed_costs"));
         sorting.planSaved(userId, PlanLines.NONE);
 
-        assertEquals(PlanPart.FIXED_COSTS, planPart("netflix"));
+        assertEquals(Bucket.FIXED_COSTS, bucket("netflix"));
     }
 
     @Test
@@ -185,10 +185,10 @@ class PlanPartSortingTests {
     @Test
     void readsPlaidCategoriesAsWords() {
         assertEquals("food and drink: coffee",
-                PlanPartClassifier.readableCategory("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"));
-        assertEquals("travel", PlanPartClassifier.readableCategory("TRAVEL", null));
-        assertEquals("other transfer", PlanPartClassifier.readableCategory("TRANSFER_OUT", "OTHER_TRANSFER"));
-        assertNull(PlanPartClassifier.readableCategory(null, null));
+                BucketClassifier.readableCategory("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"));
+        assertEquals("travel", BucketClassifier.readableCategory("TRAVEL", null));
+        assertEquals("other transfer", BucketClassifier.readableCategory("TRANSFER_OUT", "OTHER_TRANSFER"));
+        assertNull(BucketClassifier.readableCategory(null, null));
     }
 
     private PlaidTransaction transaction(String id, String name, String primary, String detailed) {
@@ -210,24 +210,24 @@ class PlanPartSortingTests {
         entityManager.clear();
     }
 
-    private void answer(Map<String, String> partByDescription) {
+    private void answer(Map<String, String> bucketByDescription) {
         doAnswer(invocation -> new TypeSafeClient.ChoiceAnswer(
-                partByDescription.get(description(invocation.getArgument(0))), 1.0))
+                bucketByDescription.get(description(invocation.getArgument(0))), 1.0))
                 .when(typeSafe).choose(any(), any());
     }
 
-    private PlanPartClassifier.State askedState() {
+    private BucketClassifier.State askedState() {
         ArgumentCaptor<Object> state = ArgumentCaptor.forClass(Object.class);
         verify(typeSafe).choose(state.capture(), any());
-        return assertInstanceOf(PlanPartClassifier.State.class, state.getValue());
+        return assertInstanceOf(BucketClassifier.State.class, state.getValue());
     }
 
     private static String description(Object state) {
-        return ((PlanPartClassifier.State) state).transaction().description();
+        return ((BucketClassifier.State) state).transaction().description();
     }
 
-    private PlanPart planPart(String transactionId) {
+    private Bucket bucket(String transactionId) {
         entityManager.clear();
-        return transactions.findById(transactionId).orElseThrow().getPlanPart();
+        return transactions.findById(transactionId).orElseThrow().getBucket();
     }
 }

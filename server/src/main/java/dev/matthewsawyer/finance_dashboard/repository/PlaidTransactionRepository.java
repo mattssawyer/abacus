@@ -1,7 +1,8 @@
 package dev.matthewsawyer.finance_dashboard.repository;
 
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -23,7 +24,7 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
               AND (:accountId IS NULL OR t.accountId = :accountId)
             ORDER BY t.transactionDate DESC, t.transactionId ASC
             """)
-    List<PlaidTransaction> findRecent(
+    Page<PlaidTransaction> findRecent(
             @Param("userId") UUID userId,
             @Param("accountId") String accountId,
             Pageable pageable);
@@ -33,15 +34,15 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
     /**
      * The spending in a date range, newest first: every transaction except pay, card payments and
      * money that only moved between the user's own accounts. Transactions not sorted yet are
-     * included with no plan part.
+     * included with no bucket.
      */
     @Query("""
             SELECT t FROM PlaidTransaction t
             WHERE t.userId = :userId
               AND t.transactionDate BETWEEN :start AND :end
               AND (:accountId IS NULL OR t.accountId = :accountId)
-              AND (t.planPart IS NULL
-                   OR t.planPart <> dev.matthewsawyer.finance_dashboard.model.PlanPart.NOT_COUNTED)
+              AND (t.bucket IS NULL
+                   OR t.bucket <> dev.matthewsawyer.finance_dashboard.model.Bucket.NOT_COUNTED)
               AND (t.personalFinanceCategoryPrimary IS NULL
                    OR t.personalFinanceCategoryPrimary NOT IN :excludedCategories)
               AND (t.personalFinanceCategoryDetailed IS NULL
@@ -56,13 +57,13 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
             @Param("excludedCategories") Collection<String> excludedCategories);
 
     /**
-     * The user's transactions that need a plan part, newest first so this month's are sorted
+     * The user's transactions that need a bucket, newest first so this month's are sorted
      * before older ones. With {@code includeSorted}, already sorted transactions come back too.
      */
     @Query("""
             SELECT t FROM PlaidTransaction t
             WHERE t.userId = :userId
-              AND (:includeSorted = TRUE OR t.planPart IS NULL)
+              AND (:includeSorted = TRUE OR t.bucket IS NULL)
               AND (t.personalFinanceCategoryPrimary IS NULL
                    OR t.personalFinanceCategoryPrimary NOT IN :excludedCategories)
               AND (t.personalFinanceCategoryDetailed IS NULL
@@ -75,18 +76,18 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
             @Param("excludedCategories") Collection<String> excludedCategories);
 
     /**
-     * Stores a transaction's plan part unless sync changed the transaction after it was read,
-     * in which case the part may no longer fit and the next sort picks it up. Returns the rows
+     * Stores a transaction's bucket unless sync changed the transaction after it was read,
+     * in which case the bucket may no longer fit and the next sort picks it up. Returns the rows
      * updated.
      */
     @Modifying
     @Transactional
     @Query("""
-            UPDATE PlaidTransaction t SET t.planPart = :part
+            UPDATE PlaidTransaction t SET t.bucket = :bucket
             WHERE t.transactionId = :transactionId AND t.updatedAt = :readUpdatedAt
             """)
-    int updatePlanPart(
+    int updateBucket(
             @Param("transactionId") String transactionId,
             @Param("readUpdatedAt") Instant readUpdatedAt,
-            @Param("part") PlanPart part);
+            @Param("bucket") Bucket bucket);
 }

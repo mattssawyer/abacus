@@ -1,9 +1,9 @@
-package dev.matthewsawyer.finance_dashboard.planpart;
+package dev.matthewsawyer.finance_dashboard.sorting;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.model.PlanPart;
+import dev.matthewsawyer.finance_dashboard.model.Bucket;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -14,11 +14,11 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Decides which plan part one transaction belongs to, using the user's plan lines to settle
+ * Decides which bucket one transaction belongs to, using the user's plan lines to settle
  * cases that depend on the person, like whether a streaming subscription is a fixed cost.
  */
 @Component
-class PlanPartClassifier {
+class BucketClassifier {
 
     // Option keys are what the model reads, so they're lower-case words rather than enum names.
     private static final Map<String, Object> CRITERIA = ordered(
@@ -59,7 +59,7 @@ class PlanPartClassifier {
 
     private final TypeSafeClient typeSafe;
 
-    PlanPartClassifier(TypeSafeClient typeSafe) {
+    BucketClassifier(TypeSafeClient typeSafe) {
         this.typeSafe = typeSafe;
     }
 
@@ -67,11 +67,11 @@ class PlanPartClassifier {
         return typeSafe.isConfigured();
     }
 
-    PlanPart classify(PlaidTransaction transaction, PlanLines plan) {
+    Bucket classify(PlaidTransaction transaction, PlanLines plan) {
         TypeSafeClient.ChoiceAnswer answer = plan.isEmpty()
                 ? typeSafe.choose(new State(TransactionState.of(transaction), null), WITHOUT_PLAN)
                 : typeSafe.choose(new State(TransactionState.of(transaction), PlanState.of(plan)), WITH_PLAN);
-        return PlanPart.valueOf(answer.choice().toUpperCase(Locale.ROOT));
+        return Bucket.valueOf(answer.choice().toUpperCase(Locale.ROOT));
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

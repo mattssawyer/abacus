@@ -14,7 +14,7 @@ import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.User;
-import dev.matthewsawyer.finance_dashboard.planpart.PlanPartSorting;
+import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamRepository;
@@ -70,14 +70,14 @@ class PlaidItemSyncTests {
 
     /** Webhook syncs are queued here and run when the test says so. */
     private final List<Runnable> queued = new ArrayList<>();
-    private final PlanPartSorting planPartSorting = mock(PlanPartSorting.class);
+    private final BucketSorting bucketSorting = mock(BucketSorting.class);
     private PlaidItemSync itemSync;
     private UUID userId;
 
     @BeforeEach
     void setUp() {
         itemSync = new PlaidItemSync(
-                items, transactionsSync, recurringStreamsSync, planPartSorting, queued::add);
+                items, transactionsSync, recurringStreamsSync, bucketSorting, queued::add);
         userId = users.saveAndFlush(new User("item-sync-test-user")).getId();
         items.saveAndFlush(new PlaidItem(
                 ITEM_ID, tokenEncryption.encrypt("access-token", userId, ITEM_ID), userId));
@@ -91,7 +91,7 @@ class PlaidItemSyncTests {
 
         itemSync.linked(storedItem());
 
-        verify(planPartSorting).sortLater(userId);
+        verify(bucketSorting).sortLater(userId);
         assertEquals(List.of("checking"), accountIds());
         assertEquals(List.of("txn-1"), transactionIds());
         assertEquals(List.of("rent"), streamIds());
@@ -133,7 +133,7 @@ class PlaidItemSyncTests {
 
         assertEquals(List.of("rent"), streamIds());
         verify(plaidApi, never()).transactionsSync(any());
-        verifyNoInteractions(planPartSorting);
+        verifyNoInteractions(bucketSorting);
     }
 
     @Test
