@@ -50,13 +50,26 @@ export interface CategorySpend {
   /** Plaid primary personal finance category, or UNCATEGORIZED. */
   category: string
   amount: number
+  /** The transactions that add up to amount, newest first. Refunds are negative. */
+  transactions: PlaidTransaction[]
 }
 
-export interface SpendingByCategory {
+/** UNSORTED holds transactions plan part sorting hasn't reached yet. */
+export type PlanPart = 'FIXED_COSTS' | 'GUILT_FREE' | 'SAVINGS' | 'INVESTMENTS' | 'UNSORTED'
+
+export interface PartSpend {
+  part: PlanPart
+  amount: number
+  /** Largest first. */
+  categories: CategorySpend[]
+}
+
+export interface SpendingByPlanPart {
   start: string
   end: string
   total: number
-  categories: CategorySpend[]
+  /** In plan order, with unsorted transactions last. */
+  parts: PartSpend[]
 }
 
 interface AccountsResponse {
@@ -83,8 +96,8 @@ export async function getAccounts(): Promise<PlaidAccount[]> {
   return data.accounts
 }
 
-export async function getSpendingByCategory(accountId?: string): Promise<SpendingByCategory> {
-  const { data } = await apiClient.get<SpendingByCategory>('/plaid/spending/by-category', {
+export async function getSpendingByPlanPart(accountId?: string): Promise<SpendingByPlanPart> {
+  const { data } = await apiClient.get<SpendingByPlanPart>('/plaid/spending/by-plan-part', {
     params: accountId ? { account_id: accountId } : undefined,
   })
   return data

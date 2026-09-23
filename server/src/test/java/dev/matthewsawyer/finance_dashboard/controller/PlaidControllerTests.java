@@ -4,6 +4,7 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
+import dev.matthewsawyer.finance_dashboard.model.PlanPart;
 import dev.matthewsawyer.finance_dashboard.model.User;
 import dev.matthewsawyer.finance_dashboard.plaid.PlaidItemLinking;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
@@ -182,76 +183,109 @@ class PlaidControllerTests {
     }
 
     @Test
-    void totalsSpendingByCategoryForTheCurrentMonth() {
+    void totalsSpendingByPlanPartForTheCurrentMonth() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(
-                eq(USER_ID), any(), any(), isNull(), anyCollection()))
+        when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
-                        categoryTotal("FOOD_AND_DRINK", "82.50"),
-                        categoryTotal("RENT_AND_UTILITIES", "1450.00"),
-                        categoryTotal("UNCATEGORIZED", "12.00")));
+                        spent("coffee", "12.50", "FOOD_AND_DRINK", PlanPart.GUILT_FREE),
+                        spent("groceries", "82.50", "FOOD_AND_DRINK", PlanPart.FIXED_COSTS),
+                        spent("rent", "1450.00", "RENT_AND_UTILITIES", PlanPart.FIXED_COSTS),
+                        spent("to-savings", "300.00", "TRANSFER_OUT", PlanPart.SAVINGS)));
 
-        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt, null);
+        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
 
         LocalDate expectedStart = LocalDate.now().withDayOfMonth(1);
         assertEquals(expectedStart, result.start());
         assertEquals(expectedStart.withDayOfMonth(expectedStart.lengthOfMonth()), result.end());
-        assertEquals(new BigDecimal("1544.50"), result.total());
+        assertEquals(new BigDecimal("1845.00"), result.total());
         assertEquals(
-                List.of("RENT_AND_UTILITIES", "FOOD_AND_DRINK", "UNCATEGORIZED"),
-                result.categories().stream().map(PlaidController.CategorySpend::category).toList());
+                List.of("FIXED_COSTS", "GUILT_FREE", "SAVINGS"),
+                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+
+        PlaidController.PartSpend fixedCosts = result.parts().get(0);
+        assertEquals(new BigDecimal("1532.50"), fixedCosts.amount());
+        assertEquals(
+                List.of("RENT_AND_UTILITIES", "FOOD_AND_DRINK"),
+                fixedCosts.categories().stream().map(PlaidController.CategorySpend::category).toList());
     }
 
     @Test
-    void leavesIncomeAndTransfersOutOfTheSpendingQuery() {
+    void listsEachCategorysTransactionsNewestFirst() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(
-                eq(USER_ID), any(), any(), isNull(), anyCollection()))
+        when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
+                .thenReturn(List.of(
+                        spent("coffee-2", "5.00", "FOOD_AND_DRINK", PlanPart.GUILT_FREE),
+                        spent("coffee-1", "7.50", "FOOD_AND_DRINK", PlanPart.GUILT_FREE)));
+
+        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+
+        PlaidController.CategorySpend food = result.parts().get(0).categories().get(0);
+        assertEquals(new BigDecimal("12.50"), food.amount());
+        assertEquals(
+                List.of("coffee-2", "coffee-1"),
+                food.transactions().stream().map(PlaidController.TransactionResponse::transactionId).toList());
+    }
+
+    @Test
+    void listsTransactionsNotSortedYetLast() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
+                .thenReturn(List.of(
+                        spent("flight", "400.00", "TRAVEL", null),
+                        spent("brokerage", "500.00", "TRANSFER_OUT", PlanPart.INVESTMENTS)));
+
+        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
+
+        assertEquals(
+                List.of("INVESTMENTS", "UNSORTED"),
+                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+    }
+
+    @Test
+    void leavesPayAndCardPaymentsOutOfTheSpendingQuery() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of());
 
-        controller.getSpendingByCategory(jwt, null);
+        controller.getSpendingByPlanPart(jwt, null);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<String>> excludedCaptor = ArgumentCaptor.forClass(Collection.class);
-        verify(transactionRepository).sumSpendingByCategory(
+        verify(transactionRepository).findSpending(
                 eq(USER_ID), any(), any(), isNull(), excludedCaptor.capture());
 
         assertEquals(
-                Set.of("INCOME", "TRANSFER_IN", "TRANSFER_OUT"),
+                Set.of("INCOME", "TRANSFER_IN", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"),
                 Set.copyOf(excludedCaptor.getValue()));
     }
 
     @Test
     void dropsCategoriesRefundedBackToZero() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(
-                eq(USER_ID), any(), any(), isNull(), anyCollection()))
+        when(transactionRepository.findSpending(eq(USER_ID), any(), any(), isNull(), anyCollection()))
                 .thenReturn(List.of(
-                        categoryTotal("GENERAL_MERCHANDISE", "-25.00"),
-                        categoryTotal("MEDICAL", "0.00"),
-                        categoryTotal("TRAVEL", "300.00")));
+                        spent("jacket", "25.00", "GENERAL_MERCHANDISE", PlanPart.GUILT_FREE),
+                        spent("jacket-refund", "-25.00", "GENERAL_MERCHANDISE", PlanPart.GUILT_FREE),
+                        spent("pharmacy-refund", "-8.00", "MEDICAL", PlanPart.FIXED_COSTS),
+                        spent("hotel", "300.00", "TRAVEL", PlanPart.GUILT_FREE)));
 
-        PlaidController.SpendingByCategoryResponse result = controller.getSpendingByCategory(jwt, null);
+        PlaidController.SpendingByPlanPartResponse result = controller.getSpendingByPlanPart(jwt, null);
 
         assertEquals(
+                List.of("GUILT_FREE"),
+                result.parts().stream().map(PlaidController.PartSpend::part).toList());
+        assertEquals(
                 List.of("TRAVEL"),
-                result.categories().stream().map(PlaidController.CategorySpend::category).toList());
+                result.parts().get(0).categories().stream().map(PlaidController.CategorySpend::category).toList());
         assertEquals(new BigDecimal("300.00"), result.total());
     }
 
-    private static PlaidTransactionRepository.CategoryTotal categoryTotal(String category, String total) {
-        return new PlaidTransactionRepository.CategoryTotal() {
-
-            @Override
-            public String getCategory() {
-                return category;
-            }
-
-            @Override
-            public BigDecimal getTotal() {
-                return new BigDecimal(total);
-            }
-        };
+    private static PlaidTransaction spent(String id, String amount, String category, PlanPart part) {
+        PlaidTransaction transaction = new PlaidTransaction(
+                id, "item-id", USER_ID, "checking", new BigDecimal(amount), LocalDate.now())
+                .personalFinanceCategory(category, null);
+        ReflectionTestUtils.setField(transaction, "planPart", part);
+        return transaction;
     }
 
     @Test
@@ -361,13 +395,13 @@ class PlaidControllerTests {
     @Test
     void filtersSpendingToTheRequestedAccount() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(transactionRepository.sumSpendingByCategory(
+        when(transactionRepository.findSpending(
                 eq(USER_ID), any(), any(), eq("account-1"), anyCollection()))
                 .thenReturn(List.of());
 
-        controller.getSpendingByCategory(jwt, "account-1");
+        controller.getSpendingByPlanPart(jwt, "account-1");
 
-        verify(transactionRepository).sumSpendingByCategory(
+        verify(transactionRepository).findSpending(
                 eq(USER_ID), any(), any(), eq("account-1"), anyCollection());
     }
 

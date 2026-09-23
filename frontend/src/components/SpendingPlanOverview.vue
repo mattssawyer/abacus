@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import { formatPlanAmount } from '../spendingPlan/money'
 import {
   BUCKET_IDS,
+  PLAN_COLORS,
   PLAN_TITLES,
   evaluatePlan,
   lineAmount,
@@ -21,16 +22,6 @@ const emit = defineEmits<{
   startOver: []
 }>()
 
-type SegmentId = BucketId | 'guiltFree'
-
-/** Categorical slots from the validated dataviz palette, in fixed order. */
-const SEGMENT_COLORS: Record<SegmentId, string> = {
-  fixedCosts: '#2a78d6',
-  investments: '#eb6834',
-  savings: '#1baf7a',
-  guiltFree: '#eda100',
-}
-
 const evaluation = computed(() =>
   evaluatePlan(props.plan.takeHome, props.plan.plan, props.plan.bufferPercent),
 )
@@ -39,7 +30,7 @@ const segments = computed(() =>
   [...BUCKET_IDS, 'guiltFree' as const].map((id) => {
     const { amount, share, target, flagged } =
       id === 'guiltFree' ? evaluation.value.guiltFree : evaluation.value.buckets[id]
-    return { id, title: PLAN_TITLES[id], color: SEGMENT_COLORS[id], amount, share, target, flagged }
+    return { id, title: PLAN_TITLES[id], color: PLAN_COLORS[id], amount, share, target, flagged }
   }),
 )
 

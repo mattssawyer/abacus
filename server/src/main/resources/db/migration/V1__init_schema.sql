@@ -39,6 +39,7 @@ CREATE TABLE transactions (
     payment_channel VARCHAR(32),
     personal_finance_category_primary VARCHAR(64),
     personal_finance_category_detailed VARCHAR(128),
+    plan_part VARCHAR(32),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

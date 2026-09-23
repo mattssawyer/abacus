@@ -11,6 +11,17 @@ export const PLAN_TITLES = {
   guiltFree: 'Guilt-free spending',
 } as const satisfies Record<BucketId | 'guiltFree', string>
 
+/**
+ * Each part of the plan keeps one color everywhere it's charted. Categorical slots from the
+ * validated dataviz palette, in fixed order.
+ */
+export const PLAN_COLORS = {
+  fixedCosts: '#2a78d6',
+  investments: '#eb6834',
+  savings: '#1baf7a',
+  guiltFree: '#eda100',
+} as const satisfies Record<BucketId | 'guiltFree', string>
+
 /** Default lines for each bucket, from the Conscious Spending Plan spreadsheet. */
 export const PLAN_LINES = {
   fixedCosts: [
