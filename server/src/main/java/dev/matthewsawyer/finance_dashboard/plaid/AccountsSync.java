@@ -65,7 +65,11 @@ class AccountsSync {
 
     /**
      * Stores every account Plaid returns for the item and drops the rest as of {@code today}.
-     * Returns whether the item has the transactions product.
+     * A returning account is restored and its completed drop interval is kept for history. Returns
+     * whether the item has the transactions product. Failure to look up the institution name
+     * leaves it null without stopping the account sync.
+     *
+     * @throws PlaidRequestException when Plaid cannot list the item's accounts
      */
     boolean sync(PlaidItem item, LocalDate today) {
         String accessToken = tokenEncryption.decrypt(

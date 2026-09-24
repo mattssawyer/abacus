@@ -123,8 +123,8 @@ export async function getLinkedItems(): Promise<PlaidItem[]> {
 }
 
 /**
- * Adds investments to a linked item. When Plaid needs the user's consent first, the result
- * carries a link token for Link update mode; call again once the user finishes it.
+ * Adds investments to a linked item. If the holdings request fails, the result carries a link
+ * token for Link update mode; call again once the user finishes it.
  */
 export async function addInvestments(
   itemId: string,

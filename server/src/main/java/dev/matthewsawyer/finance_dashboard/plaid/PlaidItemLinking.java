@@ -80,7 +80,9 @@ public class PlaidItemLinking {
 
     /**
      * Exchanges the public token Plaid Link returned, stores the item's encrypted access token and
-     * syncs it. A failed sync does not fail the link.
+     * syncs it. Plaid request failures during sync do not fail the link.
+     *
+     * @throws PlaidRequestException when Plaid cannot exchange the public token
      */
     public Linked link(UUID userId, String publicToken) {
         ItemPublicTokenExchangeResponse exchange = PlaidCalls.execute(
@@ -121,10 +123,12 @@ public class PlaidItemLinking {
 
     /**
      * Adds Plaid's investments product to an item already linked for transactions, so an
-     * institution the user has connected never needs a second item. When Plaid needs the user's
-     * consent first, returns a Link update-mode token; once that flow finishes, call this again.
+     * institution the user has connected never needs a second item. If the holdings request fails,
+     * returns a Link update-mode token; once that flow finishes, call this again.
      *
      * @throws NoSuchElementException when the user has no such item
+     * @throws PlaidRequestException when Plaid cannot create the update-mode token; a failed
+     *         holdings request instead produces that token
      */
     public AddInvestments addInvestments(UUID userId, String itemId) {
         PlaidItem item = activeItem(userId, itemId);
@@ -148,6 +152,7 @@ public class PlaidItemLinking {
      * stay as dropped accounts so net worth keeps its history.
      *
      * @throws NoSuchElementException when the user has no such item
+     * @throws PlaidRequestException when Plaid cannot remove the item; it remains linked
      */
     public void remove(UUID userId, String itemId) {
         PlaidItem item = activeItem(userId, itemId);

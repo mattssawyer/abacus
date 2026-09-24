@@ -82,6 +82,10 @@ public class PlaidController {
         this.userService = userService;
     }
 
+    /**
+     * Requests transactions by default; investment links require investments and make
+     * transactions optional.
+     */
     @PostMapping("/create-link-token")
     public Map<String, String> createLinkToken(
             @AuthenticationPrincipal Jwt jwt,
@@ -148,8 +152,8 @@ public class PlaidController {
     }
 
     /**
-     * Adds investments to a linked item. When Plaid needs the user's consent first, returns a
-     * link token for Link update mode; call again once the user finishes it.
+     * Adds investments to a linked item. If the holdings request fails, returns a link token for
+     * Link update mode; call again once the user finishes it.
      */
     @PostMapping("/items/{itemId}/investments")
     public AddInvestmentsResponse addInvestments(@AuthenticationPrincipal Jwt jwt, @PathVariable String itemId) {
@@ -379,6 +383,7 @@ public class PlaidController {
         }
     }
 
+    /** Lists the user's accounts that Plaid still returns, excluding dropped accounts. */
     @GetMapping("/accounts")
     public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);

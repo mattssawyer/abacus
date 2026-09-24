@@ -39,7 +39,10 @@ export interface Change {
   percent: number | null
 }
 
-/** How much the value moved from the range's first day to its last, or null with under two days. */
+/**
+ * Change between the first and last points, or null with fewer than two points. Percentage uses
+ * the starting value's magnitude, and is null when that value is zero.
+ */
 export function changeOver(points: BalancePoint[]): Change | null {
   if (points.length < 2) return null
   const first = points[0]!.value

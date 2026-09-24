@@ -81,6 +81,8 @@ public class PlaidItemSync {
      * Stops syncing an item the user removed, and deletes its transactions and recurring streams.
      * Its accounts are dropped rather than deleted, so net worth keeps its history. All of it
      * happens in one transaction, which ends before the lock is released.
+     *
+     * @throws RuntimeException if removal fails; the database transaction rolls back
      */
     public void removed(String itemId) {
         synchronized (itemLocks.computeIfAbsent(itemId, key -> new Object())) {

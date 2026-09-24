@@ -121,6 +121,7 @@ async function load() {
   }
 }
 
+/** Loads the chosen range and ignores results or errors from requests for earlier selections. */
 async function selectRange(next: Range) {
   if (next === range.value) return
   range.value = next
@@ -155,6 +156,7 @@ async function linkInvestmentAccount() {
   }
 }
 
+/** Retries with Link update mode if the holdings check fails, then reloads page data on success. */
 async function addInvestmentsTo(item: PlaidItem) {
   if (addingItemId.value) return
   addingItemId.value = item.item_id

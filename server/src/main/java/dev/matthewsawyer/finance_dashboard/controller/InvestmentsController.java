@@ -34,7 +34,13 @@ public class InvestmentsController {
         this.clock = clock;
     }
 
-    /** Daily net worth and investment account balances from {@code from} (or the start) through today. */
+    /**
+     * Daily net worth from {@code from} (or the first counted snapshot) through today, inclusive.
+     * Each current investment account's series starts at its first snapshot or {@code from},
+     * whichever is later, and omits days when it was dropped.
+     *
+     * @throws ResponseStatusException with HTTP 400 when {@code from} is after today
+     */
     @GetMapping("/history")
     public HistoryResponse getHistory(
             @AuthenticationPrincipal Jwt jwt,
