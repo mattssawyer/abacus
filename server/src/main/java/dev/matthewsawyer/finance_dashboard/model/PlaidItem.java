@@ -39,6 +39,13 @@ public class PlaidItem {
     @Column(nullable = false)
     private boolean investments;
 
+    /**
+     * Whether the institution offers Plaid's investments product, whether or not the item has it
+     * yet. Null until a sync after this was added finds out.
+     */
+    @Column(name = "investments_available")
+    private Boolean investmentsAvailable;
+
     /** The day the user removed the item; its data stays for balance history but it no longer syncs. */
     @Column(name = "removed_on")
     private LocalDate removedOn;
@@ -86,6 +93,10 @@ public class PlaidItem {
 
     public boolean hasInvestments() {
         return investments;
+    }
+
+    public Boolean getInvestmentsAvailable() {
+        return investmentsAvailable;
     }
 
     public boolean isRemoved() {

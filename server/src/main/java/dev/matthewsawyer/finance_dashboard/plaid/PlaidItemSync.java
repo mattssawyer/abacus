@@ -77,6 +77,11 @@ public class PlaidItemSync {
         syncUnderLock(item.getItemId(), Scope.EVERYTHING);
     }
 
+    /** Refreshes an item's accounts and details from Plaid before returning. */
+    public void refreshAccounts(String itemId) {
+        syncUnderLock(itemId, Scope.ACCOUNTS);
+    }
+
     /**
      * Stops syncing an item the user removed, and deletes its transactions and recurring streams.
      * Its accounts are dropped rather than deleted, so net worth keeps its history. All of it

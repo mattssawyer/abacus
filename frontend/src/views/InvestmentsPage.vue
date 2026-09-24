@@ -63,6 +63,8 @@ const linkError = ref('')
 const sameInstitution = ref<PlaidItem[]>([])
 const addingItemId = ref<string>()
 const addError = ref('')
+// Outlives the connection it's about, which leaves the list once it's known not to offer investments.
+const addNote = ref('')
 let disposed = false
 
 const netWorth = computed(() => history.value?.net_worth ?? [])
@@ -93,7 +95,10 @@ const investmentCards = computed(() =>
   }),
 )
 
-const itemsWithoutInvestments = computed(() => items.value.filter((item) => !item.investments))
+// Unknown availability still shows; trying finds out, and banks without investments drop off.
+const itemsWithoutInvestments = computed(() =>
+  items.value.filter((item) => !item.investments && item.investments_available !== false),
+)
 
 onMounted(load)
 onUnmounted(() => {
@@ -156,23 +161,29 @@ async function linkInvestmentAccount() {
   }
 }
 
-/** Retries with Link update mode if the holdings check fails, then reloads page data on success. */
+/**
+ * Retries with Link update mode if the holdings check fails, then reloads page data. A bank that
+ * doesn't offer investments leaves the list with a note saying so.
+ */
 async function addInvestmentsTo(item: PlaidItem) {
   if (addingItemId.value) return
   addingItemId.value = item.item_id
   addError.value = ''
-  const institution = item.institution_name ?? 'That institution'
+  addNote.value = ''
+  const institution = item.institution_name ?? 'that institution'
   try {
     let result = await addInvestments(item.item_id)
-    if (!result.added && result.link_token) {
+    if (result.outcome === 'needs_consent' && result.link_token) {
       // Plaid needs the user's consent first; update mode asks for it on the same connection.
       const finished = await openPlaidLink(result.link_token)
       if (disposed || !finished) return
       result = await addInvestments(item.item_id)
     }
     if (disposed) return
-    if (!result.added) {
-      addError.value = `${institution} didn’t share any investment accounts.`
+    if (result.outcome === 'not_offered') {
+      addNote.value = `${item.institution_name ?? 'That institution'} doesn’t offer investment accounts through Plaid.`
+    } else if (result.outcome !== 'added') {
+      addError.value = `${item.institution_name ?? 'That institution'} didn’t share any investment accounts.`
       return
     }
     await load()
@@ -382,6 +393,10 @@ function changeIcon(change: Change) {
           </div>
         </section>
 
+        <Message v-if="addNote && !itemsWithoutInvestments.length" severity="secondary">
+          {{ addNote }}
+        </Message>
+
         <section
           v-if="itemsWithoutInvestments.length"
           class="panel connections"
@@ -393,6 +408,7 @@ function changeIcon(change: Change) {
             the same institution twice counts its accounts twice.
           </p>
           <Message v-if="addError" severity="error" size="small">{{ addError }}</Message>
+          <Message v-else-if="addNote" severity="secondary" size="small">{{ addNote }}</Message>
           <ul class="connection-list">
             <li v-for="item in itemsWithoutInvestments" :key="item.item_id" class="connection">
               <span class="connection-name">

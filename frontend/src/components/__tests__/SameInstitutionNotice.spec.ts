@@ -9,8 +9,18 @@ vi.mock('../../api/PlaidService', () => ({
 }))
 
 const items = [
-  { item_id: 'first', institution_name: 'Fidelity', investments: false },
-  { item_id: 'second', institution_name: 'Fidelity', investments: true },
+  {
+    item_id: 'first',
+    institution_name: 'Fidelity',
+    investments: false,
+    investments_available: true,
+  },
+  {
+    item_id: 'second',
+    institution_name: 'Fidelity',
+    investments: true,
+    investments_available: true,
+  },
 ]
 
 function button(wrapper: VueWrapper, label: string) {

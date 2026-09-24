@@ -469,9 +469,10 @@ async function openPlaidLink() {
               class="account-notice"
             >
               <Message :severity="balanceError ? 'error' : 'secondary'">
-                {{ balanceError || 'Balance unavailable.' }}
+                {{ balanceError || 'No checking or savings account connected yet.' }}
               </Message>
               <Button
+                v-if="balanceError"
                 label="Try again"
                 severity="secondary"
                 class="retry-button"

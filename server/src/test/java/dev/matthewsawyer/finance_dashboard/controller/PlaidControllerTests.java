@@ -136,7 +136,7 @@ class PlaidControllerTests {
                 jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
 
         assertEquals("item-id", result.itemId());
-        assertEquals(List.of(new PlaidController.ItemResponse("older-item", "Fidelity", false)),
+        assertEquals(List.of(new PlaidController.ItemResponse("older-item", "Fidelity", false, null)),
                 result.sameInstitution());
     }
 
@@ -154,16 +154,16 @@ class PlaidControllerTests {
         PlaidController.ItemsResponse result = controller.getLinkedItems(jwt);
 
         assertEquals(List.of("item-one", "item-two"), result.itemIds());
-        assertEquals(new PlaidController.ItemResponse("item-two", "Fidelity", true), result.items().get(1));
+        assertEquals(new PlaidController.ItemResponse("item-two", "Fidelity", true, null), result.items().get(1));
     }
 
     @Test
     void addsInvestmentsToAnItem() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(itemLinking.addInvestments(USER_ID, "item-id"))
-                .thenReturn(new PlaidItemLinking.AddInvestments(true, null));
+                .thenReturn(new PlaidItemLinking.AddInvestments(PlaidItemLinking.AddInvestments.Outcome.ADDED, null));
 
-        assertEquals(new PlaidController.AddInvestmentsResponse(true, null),
+        assertEquals(new PlaidController.AddInvestmentsResponse("added", null),
                 controller.addInvestments(jwt, "item-id"));
     }
 
@@ -171,9 +171,10 @@ class PlaidControllerTests {
     void returnsAnUpdateModeTokenWhenPlaidNeedsConsentForInvestments() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(itemLinking.addInvestments(USER_ID, "item-id"))
-                .thenReturn(new PlaidItemLinking.AddInvestments(false, "update-token"));
+                .thenReturn(new PlaidItemLinking.AddInvestments(
+                        PlaidItemLinking.AddInvestments.Outcome.NEEDS_CONSENT, "update-token"));
 
-        assertEquals(new PlaidController.AddInvestmentsResponse(false, "update-token"),
+        assertEquals(new PlaidController.AddInvestmentsResponse("needs_consent", "update-token"),
                 controller.addInvestments(jwt, "item-id"));
     }
 

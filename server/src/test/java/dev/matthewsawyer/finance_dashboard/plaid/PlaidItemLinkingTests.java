@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -171,29 +172,54 @@ class PlaidItemLinkingTests {
     @Test
     void addsInvestmentsToALinkedItemAndSyncsIt() throws IOException {
         PlaidItem item = storedItem();
+        ReflectionTestUtils.setField(item, "investmentsAvailable", true);
         when(plaidApi.investmentsHoldingsGet(any(InvestmentsHoldingsGetRequest.class))).thenReturn(holdingsCall);
         when(holdingsCall.execute()).thenReturn(Response.success(new InvestmentsHoldingsGetResponse()));
 
-        assertEquals(new PlaidItemLinking.AddInvestments(true, null), linking.addInvestments(USER_ID, "item-id"));
+        assertEquals(PlaidItemLinking.AddInvestments.added(), linking.addInvestments(USER_ID, "item-id"));
 
         verify(itemSync).linked(item);
     }
 
     @Test
     void asksForConsentInLinkUpdateModeWhenPlaidRefusesInvestments() throws IOException {
-        storedItem();
+        ReflectionTestUtils.setField(storedItem(), "investmentsAvailable", true);
         when(plaidApi.investmentsHoldingsGet(any(InvestmentsHoldingsGetRequest.class))).thenReturn(holdingsCall);
         when(holdingsCall.execute()).thenReturn(
                 Response.error(400, ResponseBody.create("{}", MediaType.get("application/json"))));
         stubLinkToken();
 
-        assertEquals(new PlaidItemLinking.AddInvestments(false, "link-token"),
+        assertEquals(PlaidItemLinking.AddInvestments.needsConsent("link-token"),
                 linking.addInvestments(USER_ID, "item-id"));
 
         LinkTokenCreateRequest request = captureLinkTokenRequest();
         assertEquals("access-token", request.getAccessToken());
         assertEquals(List.of(Products.INVESTMENTS), request.getAdditionalConsentedProducts());
         verifyNoInteractions(itemSync);
+    }
+
+    @Test
+    void refusesInstitutionsThatDoNotOfferInvestments() {
+        PlaidItem bank = storedItem();
+        ReflectionTestUtils.setField(bank, "investmentsAvailable", false);
+
+        assertEquals(PlaidItemLinking.AddInvestments.notOffered(), linking.addInvestments(USER_ID, "item-id"));
+
+        verifyNoInteractions(plaidApi, itemSync);
+    }
+
+    @Test
+    void refreshesAnItemSyncedBeforeWeTrackedWhetherItOffersInvestments() {
+        PlaidItem bank = storedItem();
+        doAnswer(invocation -> {
+            ReflectionTestUtils.setField(bank, "investmentsAvailable", false);
+            return null;
+        }).when(itemSync).refreshAccounts("item-id");
+
+        assertEquals(PlaidItemLinking.AddInvestments.notOffered(), linking.addInvestments(USER_ID, "item-id"));
+
+        verify(itemSync).refreshAccounts("item-id");
+        verifyNoInteractions(plaidApi);
     }
 
     @Test

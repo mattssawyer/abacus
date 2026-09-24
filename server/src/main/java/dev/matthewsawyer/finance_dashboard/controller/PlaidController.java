@@ -144,10 +144,12 @@ public class PlaidController {
     public record ItemResponse(
             @JsonProperty("item_id") String itemId,
             @JsonProperty("institution_name") String institutionName,
-            @JsonProperty("investments") boolean investments
+            @JsonProperty("investments") boolean investments,
+            @JsonProperty("investments_available") Boolean investmentsAvailable
     ) {
         static ItemResponse from(PlaidItem item) {
-            return new ItemResponse(item.getItemId(), item.getInstitutionName(), item.hasInvestments());
+            return new ItemResponse(item.getItemId(), item.getInstitutionName(), item.hasInvestments(),
+                    item.getInvestmentsAvailable());
         }
     }
 
@@ -160,14 +162,15 @@ public class PlaidController {
         User user = userService.getOrCreateUser(jwt);
         try {
             PlaidItemLinking.AddInvestments result = itemLinking.addInvestments(user.getId(), itemId);
-            return new AddInvestmentsResponse(result.added(), result.linkToken());
+            return new AddInvestmentsResponse(result.outcome().name().toLowerCase(), result.linkToken());
         } catch (NoSuchElementException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
         }
     }
 
+    /** {@code outcome} is added, needs_consent (finish Link with the token) or not_offered. */
     public record AddInvestmentsResponse(
-            @JsonProperty("added") boolean added,
+            @JsonProperty("outcome") String outcome,
             @JsonProperty("link_token") String linkToken
     ) {
     }

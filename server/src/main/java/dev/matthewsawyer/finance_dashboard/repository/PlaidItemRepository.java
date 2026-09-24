@@ -41,13 +41,14 @@ public interface PlaidItemRepository extends JpaRepository<PlaidItem, String> {
     @Query("""
             UPDATE PlaidItem i
             SET i.institutionId = :institutionId, i.institutionName = :institutionName,
-                i.investments = :investments
+                i.investments = :investments, i.investmentsAvailable = :investmentsAvailable
             WHERE i.itemId = :itemId""")
     void updateDetails(
             @Param("itemId") String itemId,
             @Param("institutionId") String institutionId,
             @Param("institutionName") String institutionName,
-            @Param("investments") boolean investments);
+            @Param("investments") boolean investments,
+            @Param("investmentsAvailable") boolean investmentsAvailable);
 
     @Transactional
     @Modifying(flushAutomatically = true, clearAutomatically = true)

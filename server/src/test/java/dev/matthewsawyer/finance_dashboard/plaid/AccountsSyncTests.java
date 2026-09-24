@@ -144,6 +144,18 @@ class AccountsSyncTests {
         assertEquals(INSTITUTION_ID, stored.getInstitutionId());
         assertEquals("Fidelity", stored.getInstitutionName());
         assertTrue(stored.hasInvestments());
+        assertTrue(stored.getInvestmentsAvailable());
+    }
+
+    @Test
+    void recordsWhetherTheInstitutionOffersInvestments() throws IOException {
+        stubAccounts(List.of(Products.TRANSACTIONS), List.of(Products.INVESTMENTS));
+        accountsSync.sync(item, MON);
+        assertTrue(storedItem().getInvestmentsAvailable());
+
+        stubAccounts(List.of(Products.TRANSACTIONS), List.of(Products.AUTH));
+        accountsSync.sync(storedItem(), TUE);
+        assertFalse(storedItem().getInvestmentsAvailable());
     }
 
     @Test
@@ -217,10 +229,17 @@ class AccountsSyncTests {
 
     @SuppressWarnings("unchecked")
     private void stubAccounts(List<Products> products, AccountBase... plaidAccounts) throws IOException {
+        stubAccounts(products, List.of(), plaidAccounts);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubAccounts(List<Products> products, List<Products> available, AccountBase... plaidAccounts)
+            throws IOException {
         Call<AccountsGetResponse> call = mock(Call.class);
         when(call.execute()).thenReturn(Response.success(new AccountsGetResponse()
                 .accounts(Arrays.asList(plaidAccounts))
-                .item(new Item().itemId(ITEM_ID).institutionId(INSTITUTION_ID).products(products))));
+                .item(new Item().itemId(ITEM_ID).institutionId(INSTITUTION_ID).products(products)
+                        .availableProducts(available))));
         when(plaidApi.accountsGet(any(AccountsGetRequest.class))).thenReturn(call);
     }
 }

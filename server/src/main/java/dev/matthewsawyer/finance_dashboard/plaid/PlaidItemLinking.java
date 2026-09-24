@@ -124,7 +124,8 @@ public class PlaidItemLinking {
     /**
      * Adds Plaid's investments product to an item already linked for transactions, so an
      * institution the user has connected never needs a second item. If the holdings request fails,
-     * returns a Link update-mode token; once that flow finishes, call this again.
+     * returns a Link update-mode token; once that flow finishes, call this again. Institutions
+     * that don't offer investments, such as many banks, are refused up front.
      *
      * @throws NoSuchElementException when the user has no such item
      * @throws PlaidRequestException when Plaid cannot create the update-mode token; a failed
@@ -132,19 +133,27 @@ public class PlaidItemLinking {
      */
     public AddInvestments addInvestments(UUID userId, String itemId) {
         PlaidItem item = activeItem(userId, itemId);
+        if (item.getInvestmentsAvailable() == null) {
+            // Synced before we tracked this; the accounts list tells us.
+            itemSync.refreshAccounts(itemId);
+            item = activeItem(userId, itemId);
+        }
+        if (Boolean.FALSE.equals(item.getInvestmentsAvailable())) {
+            return AddInvestments.notOffered();
+        }
         String accessToken = tokenEncryption.decrypt(item.getEncryptedAccessToken(), userId, itemId);
         try {
             PlaidCalls.execute(plaidApi.investmentsHoldingsGet(
                     new InvestmentsHoldingsGetRequest().accessToken(accessToken)), "investments holdings get");
         } catch (PlaidRequestException e) {
-            return new AddInvestments(false, requestLinkToken(linkTokenRequest(userId)
+            return AddInvestments.needsConsent(requestLinkToken(linkTokenRequest(userId)
                     .accessToken(accessToken)
                     .additionalConsentedProducts(List.of(Products.INVESTMENTS))));
         }
 
         // Picks up the new product and fresh investment balances.
         itemSync.linked(item);
-        return new AddInvestments(true, null);
+        return AddInvestments.added();
     }
 
     /**
@@ -170,7 +179,24 @@ public class PlaidItemLinking {
     public record Linked(String itemId, List<PlaidItem> sameInstitution) {
     }
 
-    /** Either investments were added, or the user must finish Link with {@code linkToken} first. */
-    public record AddInvestments(boolean added, String linkToken) {
+    /**
+     * What happened when adding investments. For {@code NEEDS_CONSENT}, the user must finish Link
+     * with {@code linkToken} first.
+     */
+    public record AddInvestments(Outcome outcome, String linkToken) {
+
+        public enum Outcome { ADDED, NEEDS_CONSENT, NOT_OFFERED }
+
+        static AddInvestments added() {
+            return new AddInvestments(Outcome.ADDED, null);
+        }
+
+        static AddInvestments needsConsent(String linkToken) {
+            return new AddInvestments(Outcome.NEEDS_CONSENT, linkToken);
+        }
+
+        static AddInvestments notOffered() {
+            return new AddInvestments(Outcome.NOT_OFFERED, null);
+        }
     }
 }
