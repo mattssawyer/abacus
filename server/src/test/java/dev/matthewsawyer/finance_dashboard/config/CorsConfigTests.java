@@ -29,7 +29,8 @@ class CorsConfigTests {
             "GET, /plaid/accounts",
             "POST, /plaid/items",
             "GET, /spending-plan",
-            "PUT, /spending-plan"
+            "PUT, /spending-plan",
+            "DELETE, /plaid/items/item-1"
     })
     void allowsThePreflightForEveryMethodTheFrontendUses(String method, String path) throws Exception {
         mockMvc.perform(options(path)
