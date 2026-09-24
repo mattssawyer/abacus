@@ -82,6 +82,10 @@ public class PlaidController {
         this.userService = userService;
     }
 
+    /**
+     * Requests transactions by default; investment links require investments and make
+     * transactions optional.
+     */
     @PostMapping("/create-link-token")
     public Map<String, String> createLinkToken(
             @AuthenticationPrincipal Jwt jwt,
@@ -140,30 +144,33 @@ public class PlaidController {
     public record ItemResponse(
             @JsonProperty("item_id") String itemId,
             @JsonProperty("institution_name") String institutionName,
-            @JsonProperty("investments") boolean investments
+            @JsonProperty("investments") boolean investments,
+            @JsonProperty("investments_available") Boolean investmentsAvailable
     ) {
         static ItemResponse from(PlaidItem item) {
-            return new ItemResponse(item.getItemId(), item.getInstitutionName(), item.hasInvestments());
+            return new ItemResponse(item.getItemId(), item.getInstitutionName(), item.hasInvestments(),
+                    item.getInvestmentsAvailable());
         }
     }
 
     /**
-     * Adds investments to a linked item. When Plaid needs the user's consent first, returns a
-     * link token for Link update mode; call again once the user finishes it.
+     * Adds investments to a linked item. If the holdings request fails, returns a link token for
+     * Link update mode; call again once the user finishes it.
      */
     @PostMapping("/items/{itemId}/investments")
     public AddInvestmentsResponse addInvestments(@AuthenticationPrincipal Jwt jwt, @PathVariable String itemId) {
         User user = userService.getOrCreateUser(jwt);
         try {
             PlaidItemLinking.AddInvestments result = itemLinking.addInvestments(user.getId(), itemId);
-            return new AddInvestmentsResponse(result.added(), result.linkToken());
+            return new AddInvestmentsResponse(result.outcome().name().toLowerCase(), result.linkToken());
         } catch (NoSuchElementException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
         }
     }
 
+    /** {@code outcome} is added, needs_consent (finish Link with the token) or not_offered. */
     public record AddInvestmentsResponse(
-            @JsonProperty("added") boolean added,
+            @JsonProperty("outcome") String outcome,
             @JsonProperty("link_token") String linkToken
     ) {
     }
@@ -379,6 +386,7 @@ public class PlaidController {
         }
     }
 
+    /** Lists the user's accounts that Plaid still returns, excluding dropped accounts. */
     @GetMapping("/accounts")
     public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);

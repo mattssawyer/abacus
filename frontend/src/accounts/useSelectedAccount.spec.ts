@@ -9,19 +9,24 @@ vi.mock('../api/PlaidService', () => ({
 
 const STORAGE_KEY = 'abacus.selectedAccountId'
 
-function account(accountId: string, type = 'depository', mask: string | null = null): PlaidAccount {
+function account(
+  accountId: string,
+  type = 'depository',
+  subtype: string | null = accountId,
+  mask: string | null = null,
+): PlaidAccount {
   return {
     account_id: accountId,
     balances: { available: null, current: null, iso_currency_code: 'USD', limit: null },
     mask,
     name: accountId,
     official_name: null,
-    subtype: null,
+    subtype,
     type,
   }
 }
 
-const card = account('card', 'credit')
+const card = account('card', 'credit', 'credit card')
 const checking = account('checking')
 const savings = account('savings')
 
@@ -43,12 +48,44 @@ describe('useSelectedAccount', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('checking')
   })
 
-  it('falls back to the first account when none are checking or savings', async () => {
+  it('offers only bank accounts, not investments, cards, loans or CDs', async () => {
+    vi.mocked(getAccounts).mockResolvedValue([
+      account('ira', 'investment', 'ira'),
+      card,
+      account('mortgage', 'loan', 'mortgage'),
+      account('cd'),
+      account('hsa'),
+      checking,
+      account('money-market', 'depository', 'money market'),
+      savings,
+    ])
+    const selection = useSelectedAccount()
+    await selection.load()
+
+    expect(selection.accounts.value.map((loaded) => loaded.account_id)).toEqual([
+      'checking',
+      'money-market',
+      'savings',
+    ])
+  })
+
+  it('ignores a remembered investment account', async () => {
+    localStorage.setItem(STORAGE_KEY, 'ira')
+    vi.mocked(getAccounts).mockResolvedValue([account('ira', 'investment', 'ira'), savings])
+    const selection = useSelectedAccount()
+    await selection.load()
+
+    expect(selection.selectedAccountId.value).toBe('savings')
+    expect(selection.select('ira')).toBe(false)
+  })
+
+  it('selects nothing when there is no bank account', async () => {
     vi.mocked(getAccounts).mockResolvedValue([card])
     const selection = useSelectedAccount()
     await selection.load()
 
-    expect(selection.selectedAccount.value).toEqual(card)
+    expect(selection.accounts.value).toEqual([])
+    expect(selection.selectedAccountId.value).toBeUndefined()
   })
 
   it('restores the account picked on an earlier visit', async () => {
@@ -107,7 +144,7 @@ describe('useSelectedAccount', () => {
 
     expect(selection.failed.value).toBe(true)
     expect(selection.loading.value).toBe(false)
-    expect(selection.accounts.value).toHaveLength(3)
+    expect(selection.accounts.value).toHaveLength(2)
     expect(selection.selectedAccountId.value).toBe('checking')
   })
 
@@ -139,7 +176,9 @@ describe('useSelectedAccount', () => {
 
 describe('accountLabel', () => {
   it('adds the last digits when Plaid has them', () => {
-    expect(accountLabel(account('Checking', 'depository', '1234'))).toBe('Checking ••1234')
+    expect(accountLabel(account('Checking', 'depository', 'checking', '1234'))).toBe(
+      'Checking ••1234',
+    )
     expect(accountLabel(account('Checking'))).toBe('Checking')
   })
 })

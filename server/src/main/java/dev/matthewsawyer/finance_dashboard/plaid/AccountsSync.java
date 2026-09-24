@@ -29,8 +29,8 @@ import java.util.stream.Collectors;
 
 /**
  * Brings an item's stored accounts and balances up to date from Plaid's full list of the item's
- * accounts, and drops stored accounts Plaid no longer returns. Also keeps the item's institution
- * and whether it has the investments product.
+ * accounts, and drops stored accounts Plaid no longer returns. Also keeps the item's institution,
+ * whether it has the investments product, and whether its institution offers it.
  *
  * <p>This is the only place accounts are written: transactions sync pages only list accounts
  * with transactions in that page, and never investment accounts.
@@ -65,7 +65,11 @@ class AccountsSync {
 
     /**
      * Stores every account Plaid returns for the item and drops the rest as of {@code today}.
-     * Returns whether the item has the transactions product.
+     * A returning account is restored and its completed drop interval is kept for history. Returns
+     * whether the item has the transactions product. Failure to look up the institution name
+     * leaves it null without stopping the account sync.
+     *
+     * @throws PlaidRequestException when Plaid cannot list the item's accounts
      */
     boolean sync(PlaidItem item, LocalDate today) {
         String accessToken = tokenEncryption.decrypt(
@@ -75,6 +79,9 @@ class AccountsSync {
         List<AccountBase> plaidAccounts = Objects.requireNonNullElse(response.getAccounts(), List.of());
         List<Products> products = response.getItem() == null || response.getItem().getProducts() == null
                 ? List.of() : response.getItem().getProducts();
+        // Products the institution offers that the item doesn't have yet.
+        List<Products> available = response.getItem() == null || response.getItem().getAvailableProducts() == null
+                ? List.of() : response.getItem().getAvailableProducts();
         String institutionId = response.getItem() == null ? null : response.getItem().getInstitutionId();
         String institutionName = Objects.equals(institutionId, item.getInstitutionId())
                 && item.getInstitutionName() != null
@@ -105,7 +112,8 @@ class AccountsSync {
             }
 
             itemRepository.updateDetails(item.getItemId(), institutionId, institutionName,
-                    products.contains(Products.INVESTMENTS));
+                    products.contains(Products.INVESTMENTS),
+                    products.contains(Products.INVESTMENTS) || available.contains(Products.INVESTMENTS));
         });
 
         return products.contains(Products.TRANSACTIONS);

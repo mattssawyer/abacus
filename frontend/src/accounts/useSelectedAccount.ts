@@ -4,9 +4,18 @@ import { getAccounts, type PlaidAccount } from '../api/PlaidService'
 /** Shared by every page, so picking an account on one carries over to the next. */
 const STORAGE_KEY = 'abacus.selectedAccountId'
 
+/** Plaid depository subtypes that hold everyday money, unlike CDs, HSAs or prepaid cards. */
+const BANK_ACCOUNT_SUBTYPES = new Set(['checking', 'savings', 'money market', 'cash management'])
+
+/** Whether an account is a plain bank account, the only kind spending is tracked from. */
+export function isBankAccount(account: PlaidAccount): boolean {
+  return account.type === 'depository' && BANK_ACCOUNT_SUBTYPES.has(account.subtype ?? '')
+}
+
 /**
- * The user's accounts and which one they're viewing. The choice is remembered across pages and
- * visits; without one, the first checking or savings account is picked.
+ * The user's bank accounts and which one they're viewing. Investment accounts, cards and loans
+ * are left out. The choice is remembered across pages and visits; without one, the first bank
+ * account is picked.
  */
 export function useSelectedAccount() {
   const accounts = ref<PlaidAccount[]>([])
@@ -26,7 +35,7 @@ export function useSelectedAccount() {
     loading.value = true
     failed.value = false
     try {
-      const loaded = await getAccounts()
+      const loaded = (await getAccounts()).filter(isBankAccount)
       if (disposed) return
       accounts.value = loaded
       selectedAccountId.value = chooseAccount(loaded, selectedAccountId.value)
@@ -69,7 +78,7 @@ function chooseAccount(accounts: PlaidAccount[], current: string | undefined): s
   if (isLoaded(current)) return current
   const remembered = recall()
   if (isLoaded(remembered)) return remembered
-  return (accounts.find((account) => account.type === 'depository') ?? accounts[0])?.account_id
+  return accounts[0]?.account_id
 }
 
 // Storage can be unavailable (private browsing, blocked site data); selection still works for

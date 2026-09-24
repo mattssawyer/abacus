@@ -91,6 +91,17 @@ export interface PlaidItem {
   institution_name: string | null
   /** Whether the item has Plaid's investments product. */
   investments: boolean
+  /** Whether its institution offers investments at all; null until a sync finds out. */
+  investments_available: boolean | null
+}
+
+/**
+ * added: done. needs_consent: finish Link update mode with link_token, then ask again.
+ * not_offered: the institution has no investments to share, like most banks.
+ */
+export interface AddInvestmentsResult {
+  outcome: 'added' | 'needs_consent' | 'not_offered'
+  link_token: string | null
 }
 
 export interface LinkResult {
@@ -122,14 +133,9 @@ export async function getLinkedItems(): Promise<PlaidItem[]> {
   return data.items
 }
 
-/**
- * Adds investments to a linked item. When Plaid needs the user's consent first, the result
- * carries a link token for Link update mode; call again once the user finishes it.
- */
-export async function addInvestments(
-  itemId: string,
-): Promise<{ added: boolean; link_token: string | null }> {
-  const { data } = await apiClient.post<{ added: boolean; link_token: string | null }>(
+/** Adds investments to a linked item. */
+export async function addInvestments(itemId: string): Promise<AddInvestmentsResult> {
+  const { data } = await apiClient.post<AddInvestmentsResult>(
     `/plaid/items/${encodeURIComponent(itemId)}/investments`,
   )
   return data

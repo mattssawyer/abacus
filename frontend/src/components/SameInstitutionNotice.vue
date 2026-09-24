@@ -23,6 +23,10 @@ const institution = computed(
   () => props.items.find((item) => item.institution_name)?.institution_name ?? 'this institution',
 )
 
+/**
+ * Removes older items in order, skipping completed removals on retry. A failure shows an error;
+ * the removed event is emitted only after all succeed.
+ */
 async function removeOlder() {
   removing.value = true
   failed.value = false

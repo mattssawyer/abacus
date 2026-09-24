@@ -75,8 +75,12 @@ public class BalanceHistory {
     }
 
     /**
-     * The user's daily balances from {@code from} (or their first snapshot, when null or earlier)
-     * through {@code to}.
+     * The user's net worth from {@code from} (or the first counted snapshot, when null or earlier)
+     * through {@code to}, inclusive. It counts USD depository, investment, and brokerage balances
+     * and subtracts USD credit and loan balances, excluding days an account was dropped. Current
+     * investment accounts get their own series from their first snapshot or {@code from}, whichever
+     * is later, with dropped days omitted. Account changes mark later first snapshots, drops, and
+     * restorations. Net worth is empty when no counted account has a snapshot by {@code to}.
      */
     @Transactional(readOnly = true)
     public History forUser(UUID userId, LocalDate from, LocalDate to) {

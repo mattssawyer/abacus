@@ -248,7 +248,12 @@ describe('homepage balances', () => {
     vi.mocked(exchangePublicToken).mockResolvedValue({
       item_id: 'new-item',
       same_institution: [
-        { item_id: 'saved-item', institution_name: 'Fidelity', investments: false },
+        {
+          item_id: 'saved-item',
+          institution_name: 'Fidelity',
+          investments: false,
+          investments_available: true,
+        },
       ],
     })
     const wrapper = mountHome()
@@ -265,6 +270,33 @@ describe('homepage balances', () => {
     expect(removeItem).toHaveBeenCalledWith('saved-item')
     expect(wrapper.text()).not.toContain('You already had Fidelity connected')
     expect(getLinkedItemIds).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers only bank accounts to pick from', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getAccounts).mockResolvedValue([
+      checking,
+      savings,
+      { ...checking, account_id: 'ira', name: 'Roth IRA', type: 'investment', subtype: 'roth' },
+    ])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const options = wrapper.findAll('.account-select option').map((option) => option.text())
+    expect(options).toHaveLength(2)
+    expect(options.some((option) => option.includes('Roth IRA'))).toBe(false)
+  })
+
+  it('says so when no bank account is connected', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getAccounts).mockResolvedValue([
+      { ...checking, account_id: 'ira', name: 'Roth IRA', type: 'investment', subtype: 'roth' },
+    ])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No checking or savings account connected yet.')
+    expect(wrapper.findAll('button').some((element) => element.text() === 'Try again')).toBe(false)
   })
 
   it('replaces onboarding with the balance after Link succeeds', async () => {

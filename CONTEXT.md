@@ -19,8 +19,12 @@ An account Plaid has stopped returning for its Plaid item, such as a closed acco
 _Avoid_: Closed account, deleted account
 
 **Selected account**:
-The account the user is currently viewing, remembered across pages and visits. Home and a new spending plan setup both start from it.
+The bank account the user is currently viewing, remembered across pages and visits. Home and a new spending plan setup both start from it, and only bank accounts can be selected, because both are about spending.
 _Avoid_: Current account, active account
+
+**Bank account**:
+A checking, savings, money market or cash management account: where everyday money comes in and goes out. CDs, HSAs, prepaid cards, credit cards, loans and investment accounts aren't bank accounts.
+_Avoid_: Cash account, depository account (Plaid's broader word)
 
 **Investment account**:
 An account Plaid types as an investment, such as an IRA, 401(k), brokerage, HSA or 529. A cash HSA or cash-management account Plaid calls a bank account is not one.

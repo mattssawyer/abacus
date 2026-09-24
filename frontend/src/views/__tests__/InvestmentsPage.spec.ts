@@ -96,7 +96,12 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(2026, 8, 24, 10))
   vi.mocked(getLinkedItems).mockResolvedValue([
-    { item_id: 'fidelity', institution_name: 'Fidelity', investments: true },
+    {
+      item_id: 'fidelity',
+      institution_name: 'Fidelity',
+      investments: true,
+      investments_available: true,
+    },
   ])
   vi.mocked(getAccounts).mockResolvedValue([ira])
   vi.mocked(getBalanceHistory).mockResolvedValue(history)
@@ -206,7 +211,14 @@ describe('investments page', () => {
   it('warns when the linked institution was already connected', async () => {
     vi.mocked(exchangePublicToken).mockResolvedValue({
       item_id: 'new-item',
-      same_institution: [{ item_id: 'fidelity', institution_name: 'Fidelity', investments: true }],
+      same_institution: [
+        {
+          item_id: 'fidelity',
+          institution_name: 'Fidelity',
+          investments: true,
+          investments_available: true,
+        },
+      ],
     })
     const wrapper = mountPage()
     await flushPromises()
@@ -220,9 +232,14 @@ describe('investments page', () => {
 
   it('adds investments to a connection that already exists', async () => {
     vi.mocked(getLinkedItems).mockResolvedValue([
-      { item_id: 'chase', institution_name: 'Chase', investments: false },
+      {
+        item_id: 'chase',
+        institution_name: 'Chase',
+        investments: false,
+        investments_available: true,
+      },
     ])
-    vi.mocked(addInvestments).mockResolvedValue({ added: true, link_token: null })
+    vi.mocked(addInvestments).mockResolvedValue({ outcome: 'added', link_token: null })
     const wrapper = mountPage()
     await flushPromises()
 
@@ -237,11 +254,16 @@ describe('investments page', () => {
 
   it('asks for consent in Link when Plaid needs it, then adds investments', async () => {
     vi.mocked(getLinkedItems).mockResolvedValue([
-      { item_id: 'chase', institution_name: 'Chase', investments: false },
+      {
+        item_id: 'chase',
+        institution_name: 'Chase',
+        investments: false,
+        investments_available: true,
+      },
     ])
     vi.mocked(addInvestments)
-      .mockResolvedValueOnce({ added: false, link_token: 'update-token' })
-      .mockResolvedValueOnce({ added: true, link_token: null })
+      .mockResolvedValueOnce({ outcome: 'needs_consent', link_token: 'update-token' })
+      .mockResolvedValueOnce({ outcome: 'added', link_token: null })
     const wrapper = mountPage()
     await flushPromises()
 
@@ -257,11 +279,66 @@ describe('investments page', () => {
     expect(getLinkedItems).toHaveBeenCalledTimes(2)
   })
 
+  it('drops a bank that doesn’t offer investments and says why', async () => {
+    vi.mocked(getLinkedItems)
+      .mockResolvedValueOnce([
+        {
+          item_id: 'regions',
+          institution_name: null,
+          investments: false,
+          investments_available: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          item_id: 'regions',
+          institution_name: 'Regions Bank',
+          investments: false,
+          investments_available: false,
+        },
+      ])
+    vi.mocked(addInvestments).mockResolvedValue({ outcome: 'not_offered', link_token: null })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await button(wrapper, 'Add investments').trigger('click')
+    await flushPromises()
+
+    expect(window.Plaid.create).not.toHaveBeenCalled()
+    expect(wrapper.find('.connections').exists()).toBe(false)
+    expect(wrapper.text()).toContain(
+      'That institution doesn’t offer investment accounts through Plaid.',
+    )
+  })
+
+  it('hides connections whose institution doesn’t offer investments', async () => {
+    vi.mocked(getLinkedItems).mockResolvedValue([
+      {
+        item_id: 'regions',
+        institution_name: 'Regions Bank',
+        investments: false,
+        investments_available: false,
+      },
+    ])
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.find('.connections').exists()).toBe(false)
+  })
+
   it('says so when the institution still shares no investments', async () => {
     vi.mocked(getLinkedItems).mockResolvedValue([
-      { item_id: 'chase', institution_name: 'Chase', investments: false },
+      {
+        item_id: 'chase',
+        institution_name: 'Chase',
+        investments: false,
+        investments_available: true,
+      },
     ])
-    vi.mocked(addInvestments).mockResolvedValue({ added: false, link_token: 'update-token' })
+    vi.mocked(addInvestments).mockResolvedValue({
+      outcome: 'needs_consent',
+      link_token: 'update-token',
+    })
     const wrapper = mountPage()
     await flushPromises()
 
