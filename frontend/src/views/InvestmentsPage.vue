@@ -130,9 +130,10 @@ async function selectRange(next: Range) {
     const balances = await getBalanceHistory(rangeStart(next, new Date()))
     if (!disposed && range.value === next) history.value = balances
   } catch {
-    if (!disposed) historyError.value = true
+    if (!disposed && range.value === next) historyError.value = true
   } finally {
-    if (!disposed) historyLoading.value = false
+    // A newer range still loading owns these flags.
+    if (!disposed && range.value === next) historyLoading.value = false
   }
 }
 

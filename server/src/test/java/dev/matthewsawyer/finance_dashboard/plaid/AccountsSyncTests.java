@@ -11,9 +11,11 @@ import com.plaid.client.model.InstitutionsGetByIdResponse;
 import com.plaid.client.model.Item;
 import com.plaid.client.model.Products;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.model.AccountDrop;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.User;
+import dev.matthewsawyer.finance_dashboard.repository.AccountDropRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.UserRepository;
@@ -62,6 +64,7 @@ class AccountsSyncTests {
     @Autowired private PlaidTokenEncryption tokenEncryption;
     @Autowired private PlaidItemRepository items;
     @Autowired private PlaidAccountRepository accounts;
+    @Autowired private AccountDropRepository drops;
     @Autowired private UserRepository users;
     @Autowired private EntityManager entityManager;
 
@@ -114,6 +117,10 @@ class AccountsSyncTests {
         accountsSync.sync(item, TUE);
 
         assertFalse(stored("ira").isDropped());
+        AccountDrop drop = drops.findAllByUserId(userId).get(0);
+        assertEquals("ira", drop.getAccountId());
+        assertEquals(MON, drop.getDroppedOn());
+        assertEquals(TUE, drop.getRestoredOn());
     }
 
     @Test

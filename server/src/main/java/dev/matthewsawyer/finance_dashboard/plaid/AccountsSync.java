@@ -8,8 +8,10 @@ import com.plaid.client.model.CountryCode;
 import com.plaid.client.model.InstitutionsGetByIdRequest;
 import com.plaid.client.model.Products;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.model.AccountDrop;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
+import dev.matthewsawyer.finance_dashboard.repository.AccountDropRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import org.slf4j.Logger;
@@ -41,6 +43,7 @@ class AccountsSync {
     private final PlaidApi plaidApi;
     private final PlaidItemRepository itemRepository;
     private final PlaidAccountRepository accountRepository;
+    private final AccountDropRepository dropRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
 
@@ -48,12 +51,14 @@ class AccountsSync {
             PlaidApi plaidApi,
             PlaidItemRepository itemRepository,
             PlaidAccountRepository accountRepository,
+            AccountDropRepository dropRepository,
             PlaidTokenEncryption tokenEncryption,
             TransactionTemplate transactionTemplate
     ) {
         this.plaidApi = plaidApi;
         this.itemRepository = itemRepository;
         this.accountRepository = accountRepository;
+        this.dropRepository = dropRepository;
         this.tokenEncryption = tokenEncryption;
         this.transactionTemplate = transactionTemplate;
     }
@@ -85,7 +90,12 @@ class AccountsSync {
                     account = new PlaidAccount(plaidAccount.getAccountId(), item.getItemId(), item.getUserId());
                 }
                 update(account, plaidAccount);
-                account.restore();
+                if (account.isDropped()) {
+                    // Keep the finished drop, so history still leaves the account out for it.
+                    dropRepository.save(new AccountDrop(
+                            account.getAccountId(), account.getUserId(), account.getDroppedOn(), today));
+                    account.restore();
+                }
                 accountRepository.save(account);
             }
 

@@ -145,6 +145,24 @@ describe('investments page', () => {
     expect(wrapper.get('[aria-checked="true"]').text()).toBe('YTD')
   })
 
+  it('ignores a slower range that finishes after a newer one', async () => {
+    let failOlder: (error: Error) => void = () => {}
+    const wrapper = mountPage()
+    await flushPromises()
+    vi.mocked(getBalanceHistory)
+      .mockImplementationOnce(() => new Promise((_, reject) => (failOlder = reject)))
+      .mockResolvedValueOnce(history)
+
+    await button(wrapper, '1M').trigger('click')
+    await button(wrapper, 'YTD').trigger('click')
+    await flushPromises()
+    failOlder(new Error('Server unavailable'))
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('We couldn’t load that range.')
+    expect(wrapper.get('.net-worth').classes()).not.toContain('refreshing')
+  })
+
   it('says history starts today when there is only one day', async () => {
     vi.mocked(getBalanceHistory).mockResolvedValue({
       ...history,

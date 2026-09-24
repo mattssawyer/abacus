@@ -1,7 +1,9 @@
 package dev.matthewsawyer.finance_dashboard.history;
 
+import dev.matthewsawyer.finance_dashboard.model.AccountDrop;
 import dev.matthewsawyer.finance_dashboard.model.BalanceSnapshot;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
+import dev.matthewsawyer.finance_dashboard.repository.AccountDropRepository;
 import dev.matthewsawyer.finance_dashboard.repository.BalanceSnapshotRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,8 @@ import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /**
  * Records each account's balance snapshots and turns them into the investment and net worth
@@ -26,8 +30,8 @@ import java.util.UUID;
  *
  * <p>Plaid only reports today's balances, so these snapshots are the only record of past ones
  * (see docs/adr/0001). A day with no snapshot carries the account's previous balance forward.
- * An account Plaid stops returning counts toward net worth only before the day it was dropped,
- * and loses its own series.
+ * An account Plaid stops returning is left out of net worth and its own series from the day it
+ * was dropped until the day it comes back, and loses its series while it's still dropped.
  */
 @Service
 public class BalanceHistory {
@@ -40,10 +44,16 @@ public class BalanceHistory {
 
     private final PlaidAccountRepository accountRepository;
     private final BalanceSnapshotRepository snapshotRepository;
+    private final AccountDropRepository dropRepository;
 
-    BalanceHistory(PlaidAccountRepository accountRepository, BalanceSnapshotRepository snapshotRepository) {
+    BalanceHistory(
+            PlaidAccountRepository accountRepository,
+            BalanceSnapshotRepository snapshotRepository,
+            AccountDropRepository dropRepository
+    ) {
         this.accountRepository = accountRepository;
         this.snapshotRepository = snapshotRepository;
+        this.dropRepository = dropRepository;
     }
 
     /**
@@ -76,6 +86,8 @@ public class BalanceHistory {
             balances.computeIfAbsent(snapshot.getAccountId(), id -> new TreeMap<>())
                     .put(snapshot.getDate(), snapshot.getCurrentBalance());
         }
+        Map<String, List<AccountDrop>> pastDrops = dropRepository.findAllByUserId(userId).stream()
+                .collect(Collectors.groupingBy(AccountDrop::getAccountId));
 
         List<AccountSeries> investmentAccounts = new ArrayList<>();
         List<PlaidAccount> counted = new ArrayList<>();
@@ -83,7 +95,8 @@ public class BalanceHistory {
         for (PlaidAccount account : accounts) {
             NavigableMap<LocalDate, BigDecimal> accountBalances = balances.getOrDefault(account.getAccountId(), new TreeMap<>());
             if (INVESTMENTS.contains(account.getType()) && !account.isDropped()) {
-                investmentAccounts.add(new AccountSeries(account.getAccountId(), daily(accountBalances, from, to)));
+                investmentAccounts.add(new AccountSeries(account.getAccountId(),
+                        daily(accountBalances, from, to, day -> countsOn(account, pastDrops, day))));
             }
             if (sign(account) == 0) {
                 if (!account.isDropped()) {
@@ -109,7 +122,7 @@ public class BalanceHistory {
         for (LocalDate day = start; !day.isAfter(to); day = day.plusDays(1)) {
             BigDecimal total = BigDecimal.ZERO;
             for (PlaidAccount account : counted) {
-                if (account.isDropped() && !day.isBefore(account.getDroppedOn())) {
+                if (!countsOn(account, pastDrops, day)) {
                     continue;
                 }
                 BigDecimal balance = balanceOn(balances.get(account.getAccountId()), day);
@@ -130,15 +143,29 @@ public class BalanceHistory {
             if (first.isAfter(netWorthStart) && !first.isBefore(start)) {
                 accountsAdded.add(new AccountAdded(first, account.getAccountId(), account.getName()));
             }
+            for (AccountDrop drop : pastDrops.getOrDefault(account.getAccountId(), List.of())) {
+                if (within(drop.getRestoredOn(), start, to)) {
+                    accountsAdded.add(new AccountAdded(drop.getRestoredOn(), account.getAccountId(), account.getName()));
+                }
+            }
         }
         accountsAdded.sort(Comparator.comparing(AccountAdded::day));
 
         List<AccountDropped> accountsDropped = new ArrayList<>();
         for (PlaidAccount account : counted) {
-            LocalDate dropped = account.getDroppedOn();
-            if (dropped != null && balances.containsKey(account.getAccountId())
-                    && !dropped.isBefore(start) && !dropped.isAfter(to)) {
-                accountsDropped.add(new AccountDropped(dropped, account.getAccountId(), account.getName()));
+            if (!balances.containsKey(account.getAccountId())) {
+                continue;
+            }
+            List<LocalDate> dropDays = new ArrayList<>();
+            pastDrops.getOrDefault(account.getAccountId(), List.of())
+                    .forEach(drop -> dropDays.add(drop.getDroppedOn()));
+            if (account.isDropped()) {
+                dropDays.add(account.getDroppedOn());
+            }
+            for (LocalDate dropped : dropDays) {
+                if (within(dropped, start, to)) {
+                    accountsDropped.add(new AccountDropped(dropped, account.getAccountId(), account.getName()));
+                }
             }
         }
         accountsDropped.sort(Comparator.comparing(AccountDropped::day));
@@ -146,8 +173,12 @@ public class BalanceHistory {
         return new History(netWorth, investmentAccounts, accountsAdded, accountsDropped, leftOut);
     }
 
-    /** One point per day from the account's first snapshot (or {@code from}) through {@code to}. */
-    private static List<Point> daily(NavigableMap<LocalDate, BigDecimal> balances, LocalDate from, LocalDate to) {
+    /**
+     * One point per day from the account's first snapshot (or {@code from}) through {@code to},
+     * skipping days the account was dropped.
+     */
+    private static List<Point> daily(
+            NavigableMap<LocalDate, BigDecimal> balances, LocalDate from, LocalDate to, Predicate<LocalDate> counts) {
         if (balances.isEmpty()) {
             return List.of();
         }
@@ -155,9 +186,24 @@ public class BalanceHistory {
         LocalDate start = from == null || from.isBefore(first) ? first : from;
         List<Point> points = new ArrayList<>();
         for (LocalDate day = start; !day.isAfter(to); day = day.plusDays(1)) {
-            points.add(new Point(day, balanceOn(balances, day)));
+            if (counts.test(day)) {
+                points.add(new Point(day, balanceOn(balances, day)));
+            }
         }
         return points;
+    }
+
+    /** Whether the account was linked on {@code day}: not in a past drop, nor dropped by then. */
+    private static boolean countsOn(PlaidAccount account, Map<String, List<AccountDrop>> pastDrops, LocalDate day) {
+        if (account.isDropped() && !day.isBefore(account.getDroppedOn())) {
+            return false;
+        }
+        return pastDrops.getOrDefault(account.getAccountId(), List.of()).stream()
+                .noneMatch(drop -> drop.covers(day));
+    }
+
+    private static boolean within(LocalDate day, LocalDate start, LocalDate to) {
+        return !day.isBefore(start) && !day.isAfter(to);
     }
 
     private static BigDecimal balanceOn(NavigableMap<LocalDate, BigDecimal> balances, LocalDate day) {

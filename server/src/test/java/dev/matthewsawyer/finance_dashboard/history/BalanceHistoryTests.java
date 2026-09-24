@@ -5,7 +5,9 @@ import dev.matthewsawyer.finance_dashboard.history.BalanceHistory.AccountDropped
 import dev.matthewsawyer.finance_dashboard.history.BalanceHistory.AccountSeries;
 import dev.matthewsawyer.finance_dashboard.history.BalanceHistory.History;
 import dev.matthewsawyer.finance_dashboard.history.BalanceHistory.Point;
+import dev.matthewsawyer.finance_dashboard.model.AccountDrop;
 import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
+import dev.matthewsawyer.finance_dashboard.repository.AccountDropRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,7 @@ class BalanceHistoryTests {
 
     @Autowired private BalanceHistory history;
     @Autowired private PlaidAccountRepository accounts;
+    @Autowired private AccountDropRepository drops;
 
     private final UUID userId = UUID.randomUUID();
 
@@ -146,6 +149,26 @@ class BalanceHistoryTests {
     }
 
     @Test
+    void aRestoredAccountIsLeftOutOnlyWhileItWasDropped() {
+        account("checking", "depository", "5000");
+        account("ira", "investment", "20000");
+        history.record(ITEM, MON);
+        drop("ira", TUE);
+        restore("ira", THU);
+        history.record(ITEM, THU);
+
+        History result = history.forUser(userId, null, THU);
+
+        assertEquals(List.of(
+                point(MON, "25000"), point(TUE, "5000"), point(WED, "5000"), point(THU, "25000")
+        ), rendered(result.netWorth()));
+        assertEquals(List.of(point(MON, "20000"), point(THU, "20000")),
+                rendered(onlyAccount(result).points()));
+        assertEquals(List.of(new AccountDropped(TUE, "ira", "ira")), result.accountsDropped());
+        assertEquals(List.of(new AccountAdded(THU, "ira", "ira")), result.accountsAdded());
+    }
+
+    @Test
     void aDroppedAccountIsNotListedAsLeftOutOfNetWorth() {
         account("euro-savings", "depository", "3000", "EUR");
         drop("euro-savings", MON);
@@ -182,6 +205,14 @@ class BalanceHistoryTests {
         account.updateSnapshot(id, null, null, type, null, null,
                 currentBalance == null ? null : new BigDecimal(currentBalance),
                 null, currency, null);
+        accounts.saveAndFlush(account);
+    }
+
+    /** What accounts sync does when Plaid returns a dropped account again. */
+    private void restore(String id, LocalDate day) {
+        PlaidAccount account = accounts.findById(id).orElseThrow();
+        drops.saveAndFlush(new AccountDrop(id, userId, account.getDroppedOn(), day));
+        account.restore();
         accounts.saveAndFlush(account);
     }
 

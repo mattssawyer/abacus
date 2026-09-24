@@ -12,6 +12,12 @@ describe('range start', () => {
     expect(rangeStart('1Y', today)).toBe('2025-09-24')
   })
 
+  it('ends on the last day of a shorter month instead of rolling over', () => {
+    expect(rangeStart('1M', new Date(2026, 2, 31))).toBe('2026-02-28')
+    expect(rangeStart('3M', new Date(2026, 4, 31))).toBe('2026-02-28')
+    expect(rangeStart('1Y', new Date(2028, 1, 29))).toBe('2027-02-28')
+  })
+
   it('starts the year to date on January 1', () => {
     expect(rangeStart('YTD', today)).toBe('2026-01-01')
   })

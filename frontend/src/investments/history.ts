@@ -9,26 +9,28 @@ function isoDate(date: Date): string {
   return `${date.getFullYear()}-${month}-${day}`
 }
 
+/** The same day `months` earlier, or that month's last day when it's shorter (Mar 31 → Feb 28). */
+function monthsBefore(today: Date, months: number): Date {
+  const start = new Date(today.getFullYear(), today.getMonth() - months, 1)
+  const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+  start.setDate(Math.min(today.getDate(), lastDay))
+  return start
+}
+
 /** The first day a range covers, as YYYY-MM-DD, or undefined for all of history. */
 export function rangeStart(range: Range, today: Date): string | undefined {
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   switch (range) {
     case '1M':
-      start.setMonth(start.getMonth() - 1)
-      break
+      return isoDate(monthsBefore(today, 1))
     case '3M':
-      start.setMonth(start.getMonth() - 3)
-      break
+      return isoDate(monthsBefore(today, 3))
     case 'YTD':
-      start.setMonth(0, 1)
-      break
+      return isoDate(new Date(today.getFullYear(), 0, 1))
     case '1Y':
-      start.setFullYear(start.getFullYear() - 1)
-      break
+      return isoDate(monthsBefore(today, 12))
     case 'All':
       return undefined
   }
-  return isoDate(start)
 }
 
 export interface Change {

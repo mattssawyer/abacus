@@ -35,6 +35,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import retrofit2.Call;
 import retrofit2.Response;
 
@@ -81,6 +82,7 @@ class PlaidItemSyncTests {
     @Autowired private PlaidRecurringStreamRepository streams;
     @Autowired private UserRepository users;
     @Autowired private BalanceHistory balanceHistory;
+    @Autowired private TransactionTemplate transactionTemplate;
     @Autowired private EntityManager entityManager;
 
     /** Webhook syncs are queued here and run when the test says so. */
@@ -93,7 +95,7 @@ class PlaidItemSyncTests {
     void setUp() throws IOException {
         itemSync = new PlaidItemSync(
                 items, accountsSync, transactionsSync, recurringStreamsSync, bucketSorting, balanceHistory,
-                CLOCK, queued::add);
+                CLOCK, transactionTemplate, queued::add);
         userId = users.saveAndFlush(new User("item-sync-test-user")).getId();
         items.saveAndFlush(new PlaidItem(
                 ITEM_ID, tokenEncryption.encrypt("access-token", userId, ITEM_ID), userId));

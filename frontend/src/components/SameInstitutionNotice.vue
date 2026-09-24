@@ -16,6 +16,8 @@ const emit = defineEmits<{
 
 const removing = ref(false)
 const failed = ref(false)
+// A retry skips items already removed, which the server no longer knows.
+const removed = new Set<string>()
 
 const institution = computed(
   () => props.items.find((item) => item.institution_name)?.institution_name ?? 'this institution',
@@ -25,7 +27,11 @@ async function removeOlder() {
   removing.value = true
   failed.value = false
   try {
-    for (const item of props.items) await removeItem(item.item_id)
+    for (const item of props.items) {
+      if (removed.has(item.item_id)) continue
+      await removeItem(item.item_id)
+      removed.add(item.item_id)
+    }
     emit('removed')
   } catch {
     failed.value = true

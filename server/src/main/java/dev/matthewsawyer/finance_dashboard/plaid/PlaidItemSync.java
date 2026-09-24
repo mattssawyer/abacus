@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.LocalDate;
@@ -45,6 +46,7 @@ public class PlaidItemSync {
     private final BucketSorting bucketSorting;
     private final BalanceHistory balanceHistory;
     private final Clock clock;
+    private final TransactionTemplate transactionTemplate;
     private final Executor executor;
     private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
 
@@ -56,6 +58,7 @@ public class PlaidItemSync {
             BucketSorting bucketSorting,
             BalanceHistory balanceHistory,
             Clock clock,
+            TransactionTemplate transactionTemplate,
             @Qualifier("plaidSyncExecutor") Executor executor
     ) {
         this.plaidItemRepository = plaidItemRepository;
@@ -65,6 +68,7 @@ public class PlaidItemSync {
         this.bucketSorting = bucketSorting;
         this.balanceHistory = balanceHistory;
         this.clock = clock;
+        this.transactionTemplate = transactionTemplate;
         this.executor = executor;
     }
 
@@ -75,15 +79,18 @@ public class PlaidItemSync {
 
     /**
      * Stops syncing an item the user removed, and deletes its transactions and recurring streams.
-     * Its accounts are dropped rather than deleted, so net worth keeps its history.
+     * Its accounts are dropped rather than deleted, so net worth keeps its history. All of it
+     * happens in one transaction, which ends before the lock is released.
      */
     public void removed(String itemId) {
         synchronized (itemLocks.computeIfAbsent(itemId, key -> new Object())) {
             LocalDate today = LocalDate.now(clock);
-            plaidItemRepository.markRemoved(itemId, today);
-            accountsSync.dropAll(itemId, today);
-            transactionsSync.forget(itemId);
-            recurringStreamsSync.forget(itemId);
+            transactionTemplate.executeWithoutResult(status -> {
+                plaidItemRepository.markRemoved(itemId, today);
+                accountsSync.dropAll(itemId, today);
+                transactionsSync.forget(itemId);
+                recurringStreamsSync.forget(itemId);
+            });
         }
     }
 
