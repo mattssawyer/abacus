@@ -18,7 +18,11 @@ import {
   type RecurringStream,
   type SpendingByBucket,
 } from '../../api/PlaidService'
+import { getSpendingPlan, type SpendingPlanResponse } from '../../api/SpendingPlanService'
 
+vi.mock('../../api/SpendingPlanService', () => ({
+  getSpendingPlan: vi.fn<() => Promise<SpendingPlanResponse | null>>(),
+}))
 vi.mock('../../api/PlaidService', () => ({
   createLinkToken: vi.fn(),
   exchangePublicToken: vi.fn(),
@@ -160,21 +164,24 @@ const rent: RecurringStream = {
 
 let linkOptions: Parameters<Window['Plaid']['create']>[0]
 
+// Chart.js needs a real canvas, so assert on the data the chart is handed instead.
+const ChartStub = {
+  props: ['data'],
+  template: `<ul class="chart-stub">
+    <li v-for="(label, index) in data.labels" :key="label">
+      {{ label }}: {{ data.datasets[0].data[index] }}
+    </li>
+  </ul>`,
+}
+
 function mountHome() {
   return mount(HomePage, {
     global: {
       plugins: [[PrimeVue, { unstyled: true }]],
       stubs: {
         AppSidebar: true,
-        // Chart.js needs a real canvas, so assert on the data the chart is handed instead.
-        Chart: {
-          props: ['data'],
-          template: `<ul class="chart-stub">
-            <li v-for="(label, index) in data.labels" :key="label">
-              {{ label }}: {{ data.datasets[0].data[index] }}
-            </li>
-          </ul>`,
-        },
+        Chart: ChartStub,
+        RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
       },
     },
   })
@@ -208,6 +215,7 @@ beforeEach(() => {
   vi.mocked(getTransactions).mockResolvedValue([coffee])
   vi.mocked(getSpendingByBucket).mockResolvedValue(spending)
   vi.mocked(getRecurringTransactions).mockResolvedValue([rent])
+  vi.mocked(getSpendingPlan).mockResolvedValue({} as SpendingPlanResponse)
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
   vi.mocked(exchangePublicToken).mockResolvedValue({ item_id: 'saved-item', same_institution: [] })
   vi.stubGlobal('Plaid', {
@@ -587,6 +595,56 @@ describe('homepage spending breakdown', () => {
     expect(getSpendingByBucket).toHaveBeenCalledTimes(2)
     expect(wrapper.get('.spending-legend').text()).not.toContain('Not sorted yet')
     vi.useRealTimers()
+  })
+
+  it('leaves the chart alone when a check back finds nothing new', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const waiting: SpendingByBucket = {
+      ...spending,
+      buckets: [
+        ...spending.buckets,
+        {
+          bucket: 'UNSORTED',
+          amount: 45,
+          categories: [
+            { category: 'TRAVEL', amount: 45, transactions: [{ ...coffee, amount: 45 }] },
+          ],
+        },
+      ],
+    }
+    // A fresh copy each time, like a real response.
+    vi.mocked(getSpendingByBucket).mockImplementation(async () => structuredClone(waiting))
+    const wrapper = mountHome()
+    await flushPromises()
+    const chartData = wrapper.getComponent(ChartStub).props('data')
+
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+
+    expect(getSpendingByBucket).toHaveBeenCalledTimes(2)
+    // New data rebuilds the chart and replays its animation.
+    expect(wrapper.getComponent(ChartStub).props('data')).toBe(chartData)
+    vi.useRealTimers()
+  })
+
+  it('asks for a spending plan when there is none', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingPlan).mockResolvedValue(null)
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const prompt = wrapper.get('.spending-plan-prompt')
+    expect(prompt.text()).toBe('Create your spending plan to see your spending sorted into buckets.')
+    expect(prompt.get('a').attributes('href')).toBe('/spending-plan')
+  })
+
+  it('does not ask for a spending plan once there is one', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    const wrapper = mountHome()
+    await flushPromises()
+
+    expect(wrapper.find('.spending-plan-prompt').exists()).toBe(false)
   })
 
   it('shows an empty state instead of a blank chart', async () => {
