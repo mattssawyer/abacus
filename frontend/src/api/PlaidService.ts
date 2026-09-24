@@ -84,19 +84,60 @@ interface AccountsResponse {
   accounts: PlaidAccount[]
 }
 
-export async function createLinkToken(): Promise<string> {
-  const { data } = await apiClient.post<{ link_token: string }>('/plaid/create-link-token')
+/** One login at one institution. */
+export interface PlaidItem {
+  item_id: string
+  /** Null until a sync learns it. */
+  institution_name: string | null
+  /** Whether the item has Plaid's investments product. */
+  investments: boolean
+}
+
+export interface LinkResult {
+  item_id: string
+  /** The user's other items at the same institution, whose accounts now appear twice. */
+  same_institution: PlaidItem[]
+}
+
+/** Investment links also show institutions, like 401(k) providers, that have no transactions. */
+export async function createLinkToken(options: { investments?: boolean } = {}): Promise<string> {
+  const { data } = await apiClient.post<{ link_token: string }>('/plaid/create-link-token', null, {
+    params: options.investments ? { investments: true } : undefined,
+  })
   return data.link_token
 }
 
-export async function exchangePublicToken(publicToken: string): Promise<string> {
-  const { data } = await apiClient.post<{ item_id: string }>('/plaid/items', { publicToken })
-  return data.item_id
+export async function exchangePublicToken(publicToken: string): Promise<LinkResult> {
+  const { data } = await apiClient.post<LinkResult>('/plaid/items', { publicToken })
+  return data
 }
 
 export async function getLinkedItemIds(): Promise<string[]> {
   const { data } = await apiClient.get<{ item_ids: string[] }>('/plaid/items')
   return data.item_ids
+}
+
+export async function getLinkedItems(): Promise<PlaidItem[]> {
+  const { data } = await apiClient.get<{ items: PlaidItem[] }>('/plaid/items')
+  return data.items
+}
+
+/**
+ * Adds investments to a linked item. When Plaid needs the user's consent first, the result
+ * carries a link token for Link update mode; call again once the user finishes it.
+ */
+export async function addInvestments(
+  itemId: string,
+): Promise<{ added: boolean; link_token: string | null }> {
+  const { data } = await apiClient.post<{ added: boolean; link_token: string | null }>(
+    `/plaid/items/${encodeURIComponent(itemId)}/investments`,
+  )
+  return data
+}
+
+/** Removes an item from Plaid. Its accounts leave net worth from today. */
+export async function removeItem(itemId: string): Promise<void> {
+  await apiClient.delete(`/plaid/items/${encodeURIComponent(itemId)}`)
 }
 
 export async function getAccounts(): Promise<PlaidAccount[]> {

@@ -9,6 +9,7 @@ import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 @Entity
@@ -55,6 +56,9 @@ public class PlaidAccount {
     @Column(name = "unofficial_currency_code", length = 16)
     private String unofficialCurrencyCode;
 
+    @Column(name = "dropped_on")
+    private LocalDate droppedOn;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -95,6 +99,26 @@ public class PlaidAccount {
         this.limitAmount = limitAmount;
         this.isoCurrencyCode = isoCurrencyCode;
         this.unofficialCurrencyCode = unofficialCurrencyCode;
+    }
+
+    /** Plaid stopped returning this account on {@code day}; an earlier drop date is kept. */
+    public void drop(LocalDate day) {
+        if (droppedOn == null) {
+            droppedOn = day;
+        }
+    }
+
+    /** Plaid is returning this account again. */
+    public void restore() {
+        droppedOn = null;
+    }
+
+    public LocalDate getDroppedOn() {
+        return droppedOn;
+    }
+
+    public boolean isDropped() {
+        return droppedOn != null;
     }
 
     public String getAccountId() {

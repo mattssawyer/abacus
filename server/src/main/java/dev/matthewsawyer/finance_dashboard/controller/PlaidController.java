@@ -19,11 +19,14 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -34,6 +37,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 @RestController
@@ -79,13 +83,19 @@ public class PlaidController {
     }
 
     @PostMapping("/create-link-token")
-    public Map<String, String> createLinkToken(@AuthenticationPrincipal Jwt jwt) {
+    public Map<String, String> createLinkToken(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestParam(defaultValue = "false") boolean investments
+    ) {
         User user = userService.getOrCreateUser(jwt);
-        return Map.of("link_token", itemLinking.createLinkToken(user.getId()));
+        String linkToken = investments
+                ? itemLinking.createInvestmentsLinkToken(user.getId())
+                : itemLinking.createLinkToken(user.getId());
+        return Map.of("link_token", linkToken);
     }
 
     @PostMapping("/items")
-    public Map<String, String> exchangePublicToken(
+    public LinkResponse exchangePublicToken(
             @AuthenticationPrincipal Jwt jwt,
             @RequestBody ExchangePublicTokenRequest request
     ) {
@@ -94,21 +104,79 @@ public class PlaidController {
         }
 
         User user = userService.getOrCreateUser(jwt);
-        return Map.of("item_id", itemLinking.link(user.getId(), request.publicToken()));
+        PlaidItemLinking.Linked linked = itemLinking.link(user.getId(), request.publicToken());
+        return new LinkResponse(
+                linked.itemId(), linked.sameInstitution().stream().map(ItemResponse::from).toList());
     }
 
     public record ExchangePublicTokenRequest(String publicToken) {
     }
 
+    /** {@code sameInstitution} lists the user's other items at the linked item's institution. */
+    public record LinkResponse(
+            @JsonProperty("item_id") String itemId,
+            @JsonProperty("same_institution") List<ItemResponse> sameInstitution
+    ) {
+    }
+
     @GetMapping("/items")
-    public Map<String, List<String>> getLinkedItems(@AuthenticationPrincipal Jwt jwt) {
+    public ItemsResponse getLinkedItems(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);
-        List<String> itemIds = plaidItemRepository.findAllByUserIdOrderByItemIdAsc(user.getId())
+        List<ItemResponse> items = plaidItemRepository
+                .findAllByUserIdAndRemovedOnIsNullOrderByItemIdAsc(user.getId())
                 .stream()
-                .map(PlaidItem::getItemId)
+                .map(ItemResponse::from)
                 .toList();
 
-        return Map.of("item_ids", itemIds);
+        return new ItemsResponse(items.stream().map(ItemResponse::itemId).toList(), items);
+    }
+
+    public record ItemsResponse(
+            @JsonProperty("item_ids") List<String> itemIds,
+            @JsonProperty("items") List<ItemResponse> items
+    ) {
+    }
+
+    public record ItemResponse(
+            @JsonProperty("item_id") String itemId,
+            @JsonProperty("institution_name") String institutionName,
+            @JsonProperty("investments") boolean investments
+    ) {
+        static ItemResponse from(PlaidItem item) {
+            return new ItemResponse(item.getItemId(), item.getInstitutionName(), item.hasInvestments());
+        }
+    }
+
+    /**
+     * Adds investments to a linked item. When Plaid needs the user's consent first, returns a
+     * link token for Link update mode; call again once the user finishes it.
+     */
+    @PostMapping("/items/{itemId}/investments")
+    public AddInvestmentsResponse addInvestments(@AuthenticationPrincipal Jwt jwt, @PathVariable String itemId) {
+        User user = userService.getOrCreateUser(jwt);
+        try {
+            PlaidItemLinking.AddInvestments result = itemLinking.addInvestments(user.getId(), itemId);
+            return new AddInvestmentsResponse(result.added(), result.linkToken());
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
+        }
+    }
+
+    public record AddInvestmentsResponse(
+            @JsonProperty("added") boolean added,
+            @JsonProperty("link_token") String linkToken
+    ) {
+    }
+
+    @DeleteMapping("/items/{itemId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeItem(@AuthenticationPrincipal Jwt jwt, @PathVariable String itemId) {
+        User user = userService.getOrCreateUser(jwt);
+        try {
+            itemLinking.remove(user.getId(), itemId);
+        } catch (NoSuchElementException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found");
+        }
     }
 
     @GetMapping("/transactions")
@@ -315,7 +383,7 @@ public class PlaidController {
     public Map<String, List<AccountResponse>> getAccounts(@AuthenticationPrincipal Jwt jwt) {
         User user = userService.getOrCreateUser(jwt);
         List<AccountResponse> accounts = accountRepository
-                .findAllByUserIdOrderByNameAscAccountIdAsc(user.getId())
+                .findAllByUserIdAndDroppedOnIsNullOrderByNameAscAccountIdAsc(user.getId())
                 .stream()
                 .map(AccountResponse::from)
                 .toList();

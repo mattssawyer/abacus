@@ -10,6 +10,11 @@ const router = createRouter({
       name: 'spending-plan',
       component: () => import('../views/SpendingPlanPage.vue'),
     },
+    {
+      path: '/investments',
+      name: 'investments',
+      component: () => import('../views/InvestmentsPage.vue'),
+    },
   ],
 })
 

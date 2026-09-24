@@ -12,6 +12,7 @@ import {
   getTransactions,
   getTransactionPage,
   getRecurringTransactions,
+  removeItem,
   type PlaidAccount,
   type PlaidTransaction,
   type RecurringStream,
@@ -27,6 +28,7 @@ vi.mock('../../api/PlaidService', () => ({
   getTransactions: vi.fn(),
   getTransactionPage: vi.fn(),
   getRecurringTransactions: vi.fn(),
+  removeItem: vi.fn(),
 }))
 const clerk = vi.hoisted(() => ({
   user: null as {
@@ -207,7 +209,7 @@ beforeEach(() => {
   vi.mocked(getSpendingByBucket).mockResolvedValue(spending)
   vi.mocked(getRecurringTransactions).mockResolvedValue([rent])
   vi.mocked(createLinkToken).mockResolvedValue('link-token')
-  vi.mocked(exchangePublicToken).mockResolvedValue('saved-item')
+  vi.mocked(exchangePublicToken).mockResolvedValue({ item_id: 'saved-item', same_institution: [] })
   vi.stubGlobal('Plaid', {
     create: vi.fn((options: typeof linkOptions) => {
       linkOptions = options
@@ -240,6 +242,29 @@ describe('homepage balances', () => {
     expect(wrapper.get('.balance-card').text()).toContain('Balance')
     expect(wrapper.get('.balance-card').text()).toContain('$1,250.50')
     expect(wrapper.text()).not.toContain('Start with an account.')
+  })
+
+  it('offers to remove the older connection when an institution is linked again', async () => {
+    vi.mocked(exchangePublicToken).mockResolvedValue({
+      item_id: 'new-item',
+      same_institution: [
+        { item_id: 'saved-item', institution_name: 'Fidelity', investments: false },
+      ],
+    })
+    const wrapper = mountHome()
+    await flushPromises()
+    await button(wrapper, 'Add an account').trigger('click')
+    await flushPromises()
+    linkOptions.onSuccess('public-token', {})
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('You already had Fidelity connected')
+    await button(wrapper, 'Remove the older connection').trigger('click')
+    await flushPromises()
+
+    expect(removeItem).toHaveBeenCalledWith('saved-item')
+    expect(wrapper.text()).not.toContain('You already had Fidelity connected')
+    expect(getLinkedItemIds).toHaveBeenCalledTimes(2)
   })
 
   it('replaces onboarding with the balance after Link succeeds', async () => {

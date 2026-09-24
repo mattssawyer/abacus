@@ -6,6 +6,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 @Entity
@@ -27,6 +28,20 @@ public class PlaidItem {
 
     @Column(name = "recurring_synced_at")
     private Instant recurringSyncedAt;
+
+    @Column(name = "institution_id", length = 64)
+    private String institutionId;
+
+    @Column(name = "institution_name")
+    private String institutionName;
+
+    /** Whether the item has Plaid's investments product, which Plaid bills per item. */
+    @Column(nullable = false)
+    private boolean investments;
+
+    /** The day the user removed the item; its data stays for balance history but it no longer syncs. */
+    @Column(name = "removed_on")
+    private LocalDate removedOn;
 
     protected PlaidItem() {
     }
@@ -59,5 +74,21 @@ public class PlaidItem {
 
     public Instant getRecurringSyncedAt() {
         return recurringSyncedAt;
+    }
+
+    public String getInstitutionId() {
+        return institutionId;
+    }
+
+    public String getInstitutionName() {
+        return institutionName;
+    }
+
+    public boolean hasInvestments() {
+        return investments;
+    }
+
+    public boolean isRemoved() {
+        return removedOn != null;
     }
 }

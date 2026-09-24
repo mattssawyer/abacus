@@ -1,8 +1,5 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
-import com.plaid.client.model.AccountBalance;
-import com.plaid.client.model.AccountBase;
-import com.plaid.client.model.AccountType;
 import com.plaid.client.model.PersonalFinanceCategory;
 import com.plaid.client.model.RemovedTransaction;
 import com.plaid.client.model.Transaction;
@@ -10,10 +7,8 @@ import com.plaid.client.model.TransactionsSyncRequest;
 import com.plaid.client.model.TransactionsSyncResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.TestPlaidKeysets;
-import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import okhttp3.MediaType;
@@ -34,7 +29,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -58,9 +52,6 @@ class TransactionsSyncTests {
     private PlaidItemRepository plaidItemRepository;
 
     @Mock
-    private PlaidAccountRepository accountRepository;
-
-    @Mock
     private PlaidTransactionRepository transactionRepository;
 
     @Mock
@@ -79,7 +70,6 @@ class TransactionsSyncTests {
         sync = new TransactionsSync(
                 plaidApi,
                 plaidItemRepository,
-                accountRepository,
                 transactionRepository,
                 tokenEncryption,
                 new TransactionTemplate(transactionManager)
@@ -133,31 +123,6 @@ class TransactionsSyncTests {
         assertEquals("FOOD_AND_DRINK_COFFEE", saved.getPersonalFinanceCategoryDetailed());
 
         verify(plaidItemRepository).updateTransactionsCursor("item-id", "cursor-1");
-    }
-
-    @Test
-    void storesAccountsReturnedBySync() throws IOException {
-        AccountBase plaidAccount = new AccountBase()
-                .accountId("checking")
-                .name("Checking")
-                .mask("1234")
-                .type(AccountType.DEPOSITORY)
-                .balances(new AccountBalance().current(1250.5).available(1200.0).isoCurrencyCode("USD"));
-
-        when(accountRepository.findById("checking")).thenReturn(Optional.empty());
-        stubSync(new TransactionsSyncResponse()
-                .accounts(List.of(plaidAccount))
-                .nextCursor("cursor-1")
-                .hasMore(false));
-
-        sync.sync(item);
-
-        ArgumentCaptor<PlaidAccount> accountCaptor = ArgumentCaptor.forClass(PlaidAccount.class);
-        verify(accountRepository).save(accountCaptor.capture());
-        assertEquals("checking", accountCaptor.getValue().getAccountId());
-        assertEquals("Checking", accountCaptor.getValue().getName());
-        assertEquals("depository", accountCaptor.getValue().getType());
-        assertEquals(0, new BigDecimal("1250.5").compareTo(accountCaptor.getValue().getCurrentBalance()));
     }
 
     @Test
