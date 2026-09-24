@@ -682,7 +682,8 @@ describe('homepage recurring transactions', () => {
     const list = wrapper.get('.recurring-card .transactions-list')
     expect(list.attributes('tabindex')).toBe('0')
     expect(wrapper.findAll('.recurring-card .transaction-name')).toHaveLength(8)
-    expect(wrapper.findAll('.recurring-card .transaction-name').at(-1)?.text()).toBe('Bill 8')
+    const names = wrapper.findAll('.recurring-card .transaction-name')
+    expect(names[names.length - 1]?.text()).toBe('Bill 8')
   })
 
   it('lists upcoming recurring charges with cadence and next date', async () => {
