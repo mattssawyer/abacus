@@ -2,6 +2,7 @@
 import { UserButton, useUser } from '@clerk/vue'
 import { ChevronDown, Landmark, Plus } from '@lucide/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { ChartOptions } from 'chart.js'
 import Button from 'primevue/button'
 import Chart from 'primevue/chart'
@@ -23,6 +24,7 @@ import {
   type RecurringStream,
   type SpendingByBucket,
 } from '../api/PlaidService'
+import { getSpendingPlan } from '../api/SpendingPlanService'
 import {
   BUCKET_STYLES,
   categoryLabel,
@@ -62,6 +64,8 @@ const transactions = ref<PlaidTransaction[]>([])
 const allTransactionsVisible = ref(false)
 const recurring = ref<RecurringStream[]>([])
 const spending = ref<SpendingByBucket>()
+// Unknown until loaded, so the plan prompt never flashes for someone who has a plan.
+const hasSpendingPlan = ref<boolean>()
 // Buckets start open and categories start closed, so buckets track what's closed. Category keys
 // include the bucket, since the same category can appear under two buckets.
 const closedBuckets = ref(new Set<Bucket>())
@@ -214,7 +218,7 @@ async function loadConnections() {
     itemIds.value = savedItemIds
     await loadAccounts()
     if (disposed) return
-    await Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
+    await Promise.all([loadTransactions(), loadSpending(), loadRecurring(), loadSpendingPlan()])
   } catch {
     if (!disposed)
       connectionError.value = 'We couldn’t load your connected accounts. Please try again.'
@@ -233,6 +237,16 @@ function onAccountChange(event: Event) {
   if (!(target instanceof HTMLSelectElement)) return
   if (!selectAccount(target.value)) return
   void Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
+}
+
+async function loadSpendingPlan() {
+  if (!itemIds.value.length) return
+  try {
+    const plan = await getSpendingPlan()
+    if (!disposed) hasSpendingPlan.value = plan !== null
+  } catch {
+    // The prompt is only a nudge, so leave it hidden when the plan can't be checked.
+  }
 }
 
 async function loadSpending() {
@@ -263,7 +277,8 @@ function recheckUnsorted(accountId: string | undefined) {
     try {
       const summary = await getSpendingByBucket(accountId)
       if (disposed || accountId !== selectedAccountId.value) return
-      spending.value = summary
+      // New data rebuilds the chart and replays its animation, so only swap it in when it changed.
+      if (JSON.stringify(summary) !== JSON.stringify(spending.value)) spending.value = summary
       recheckUnsorted(accountId)
     } catch {
       // Keep showing what loaded; the next visit tries again.
@@ -311,7 +326,7 @@ async function finishLink(publicToken: string) {
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
     await loadAccounts()
     if (disposed) return
-    await Promise.all([loadTransactions(), loadSpending(), loadRecurring()])
+    await Promise.all([loadTransactions(), loadSpending(), loadRecurring(), loadSpendingPlan()])
   } catch {
     if (!disposed) linkError.value = 'Your account connection could not be saved. Please try again.'
   } finally {
@@ -641,6 +656,10 @@ async function openPlaidLink() {
             </p>
 
             <div v-else class="spending-body">
+              <p v-if="hasSpendingPlan === false" class="spending-plan-prompt">
+                <RouterLink to="/spending-plan">Create your spending plan</RouterLink>
+                to see your spending sorted into buckets.
+              </p>
               <div class="spending-chart">
                 <Chart
                   type="doughnut"
@@ -1116,6 +1135,18 @@ h1 {
 .spending-empty {
   color: var(--app-text-secondary);
   line-height: 1.65;
+}
+
+.spending-plan-prompt {
+  margin: 0;
+  color: var(--app-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.spending-plan-prompt a {
+  color: var(--app-text);
+  font-weight: 500;
 }
 
 .card-label {
