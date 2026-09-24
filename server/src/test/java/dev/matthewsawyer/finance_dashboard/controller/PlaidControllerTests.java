@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.UUID;
 
@@ -44,6 +45,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -97,7 +99,15 @@ class PlaidControllerTests {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
         when(itemLinking.createLinkToken(USER_ID)).thenReturn("link-token");
 
-        assertEquals(Map.of("link_token", "link-token"), controller.createLinkToken(jwt));
+        assertEquals(Map.of("link_token", "link-token"), controller.createLinkToken(jwt, false));
+    }
+
+    @Test
+    void createsInvestmentLinkTokensWhenAsked() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(itemLinking.createInvestmentsLinkToken(USER_ID)).thenReturn("investments-link-token");
+
+        assertEquals(Map.of("link_token", "investments-link-token"), controller.createLinkToken(jwt, true));
     }
 
     @Test
@@ -115,43 +125,104 @@ class PlaidControllerTests {
     }
 
     @Test
-    void linksTheItemForTheCurrentUser() {
+    void linksTheItemForTheCurrentUserAndListsItsInstitutionsOtherItems() {
+        PlaidItem older = new PlaidItem("older-item", "encrypted-token", USER_ID);
+        ReflectionTestUtils.setField(older, "institutionName", "Fidelity");
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(itemLinking.link(USER_ID, "public-token")).thenReturn("item-id");
+        when(itemLinking.link(USER_ID, "public-token"))
+                .thenReturn(new PlaidItemLinking.Linked("item-id", List.of(older)));
 
-        Map<String, String> result = controller.exchangePublicToken(
+        PlaidController.LinkResponse result = controller.exchangePublicToken(
                 jwt, new PlaidController.ExchangePublicTokenRequest("public-token"));
 
-        assertEquals(Map.of("item_id", "item-id"), result);
+        assertEquals("item-id", result.itemId());
+        assertEquals(List.of(new PlaidController.ItemResponse("older-item", "Fidelity", false)),
+                result.sameInstitution());
     }
 
     @Test
-    void listsOnlyItemIdsForCurrentUser() {
+    void listsTheCurrentUsersItemsThatAreNotRemoved() {
+        PlaidItem brokerage = new PlaidItem("item-two", "encrypted-token-two", USER_ID);
+        ReflectionTestUtils.setField(brokerage, "institutionName", "Fidelity");
+        ReflectionTestUtils.setField(brokerage, "investments", true);
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of(
+        when(plaidItemRepository.findAllByUserIdAndRemovedOnIsNullOrderByItemIdAsc(USER_ID)).thenReturn(List.of(
                 new PlaidItem("item-one", "encrypted-token-one", USER_ID),
-                new PlaidItem("item-two", "encrypted-token-two", USER_ID)
+                brokerage
         ));
 
-        Map<String, List<String>> result = controller.getLinkedItems(jwt);
+        PlaidController.ItemsResponse result = controller.getLinkedItems(jwt);
 
-        assertEquals(Map.of("item_ids", List.of("item-one", "item-two")), result);
-        verify(plaidItemRepository).findAllByUserIdOrderByItemIdAsc(USER_ID);
+        assertEquals(List.of("item-one", "item-two"), result.itemIds());
+        assertEquals(new PlaidController.ItemResponse("item-two", "Fidelity", true), result.items().get(1));
+    }
+
+    @Test
+    void addsInvestmentsToAnItem() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(itemLinking.addInvestments(USER_ID, "item-id"))
+                .thenReturn(new PlaidItemLinking.AddInvestments(true, null));
+
+        assertEquals(new PlaidController.AddInvestmentsResponse(true, null),
+                controller.addInvestments(jwt, "item-id"));
+    }
+
+    @Test
+    void returnsAnUpdateModeTokenWhenPlaidNeedsConsentForInvestments() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(itemLinking.addInvestments(USER_ID, "item-id"))
+                .thenReturn(new PlaidItemLinking.AddInvestments(false, "update-token"));
+
+        assertEquals(new PlaidController.AddInvestmentsResponse(false, "update-token"),
+                controller.addInvestments(jwt, "item-id"));
+    }
+
+    @Test
+    void addingInvestmentsToAnotherUsersItemIsNotFound() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        when(itemLinking.addInvestments(USER_ID, "someone-elses"))
+                .thenThrow(new NoSuchElementException("No item someone-elses"));
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> controller.addInvestments(jwt, "someone-elses"));
+
+        assertEquals(HttpStatus.NOT_FOUND, error.getStatusCode());
+    }
+
+    @Test
+    void removesAnItem() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+
+        controller.removeItem(jwt, "item-id");
+
+        verify(itemLinking).remove(USER_ID, "item-id");
+    }
+
+    @Test
+    void removingAnotherUsersItemIsNotFound() {
+        when(userService.getOrCreateUser(jwt)).thenReturn(user);
+        doThrow(new NoSuchElementException("No item someone-elses"))
+                .when(itemLinking).remove(USER_ID, "someone-elses");
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> controller.removeItem(jwt, "someone-elses"));
+
+        assertEquals(HttpStatus.NOT_FOUND, error.getStatusCode());
     }
 
     @Test
     void returnsEmptyItemsForUserWithoutConnections() {
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(plaidItemRepository.findAllByUserIdOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
+        when(plaidItemRepository.findAllByUserIdAndRemovedOnIsNullOrderByItemIdAsc(USER_ID)).thenReturn(List.of());
 
-        assertEquals(Map.of("item_ids", List.of()), controller.getLinkedItems(jwt));
+        assertEquals(List.of(), controller.getLinkedItems(jwt).itemIds());
     }
 
     @Test
-    void returnsStoredAccounts() {
+    void returnsAccountsThatAreNotDropped() {
         PlaidAccount stored = checkingAccount();
         when(userService.getOrCreateUser(jwt)).thenReturn(user);
-        when(accountRepository.findAllByUserIdOrderByNameAscAccountIdAsc(USER_ID))
+        when(accountRepository.findAllByUserIdAndDroppedOnIsNullOrderByNameAscAccountIdAsc(USER_ID))
                 .thenReturn(List.of(stored));
 
         List<PlaidController.AccountResponse> result = controller.getAccounts(jwt).get("accounts");

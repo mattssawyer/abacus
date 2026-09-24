@@ -29,6 +29,8 @@ public interface PlaidTransactionRepository extends JpaRepository<PlaidTransacti
             @Param("accountId") String accountId,
             Pageable pageable);
 
+    void deleteAllByItemId(String itemId);
+
     void deleteAllByItemIdAndTransactionIdIn(String itemId, Collection<String> transactionIds);
 
     /**

@@ -1,17 +1,13 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
-import com.plaid.client.model.AccountBalance;
-import com.plaid.client.model.AccountBase;
 import com.plaid.client.model.RemovedTransaction;
 import com.plaid.client.model.Transaction;
 import com.plaid.client.model.TransactionsSyncRequest;
 import com.plaid.client.model.TransactionsSyncRequestOptions;
 import com.plaid.client.model.TransactionsSyncResponse;
 import com.plaid.client.request.PlaidApi;
-import dev.matthewsawyer.finance_dashboard.model.PlaidAccount;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidTransaction;
-import dev.matthewsawyer.finance_dashboard.repository.PlaidAccountRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import org.slf4j.Logger;
@@ -24,7 +20,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-/** Brings an item's accounts and transactions up to date, starting from its stored cursor. */
+/** Brings an item's transactions up to date, starting from its stored cursor. */
 @Component
 class TransactionsSync {
 
@@ -37,7 +33,6 @@ class TransactionsSync {
 
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
-    private final PlaidAccountRepository accountRepository;
     private final PlaidTransactionRepository transactionRepository;
     private final PlaidTokenEncryption tokenEncryption;
     private final TransactionTemplate transactionTemplate;
@@ -45,14 +40,12 @@ class TransactionsSync {
     TransactionsSync(
             PlaidApi plaidApi,
             PlaidItemRepository plaidItemRepository,
-            PlaidAccountRepository accountRepository,
             PlaidTransactionRepository transactionRepository,
             PlaidTokenEncryption tokenEncryption,
             TransactionTemplate transactionTemplate
     ) {
         this.plaidApi = plaidApi;
         this.plaidItemRepository = plaidItemRepository;
-        this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.tokenEncryption = tokenEncryption;
         this.transactionTemplate = transactionTemplate;
@@ -96,6 +89,11 @@ class TransactionsSync {
         throw new IllegalStateException("Plaid transactions sync exceeded " + MAX_PAGES + " pages");
     }
 
+    /** Deletes the transactions of an item the user removed. */
+    void forget(String itemId) {
+        transactionTemplate.executeWithoutResult(status -> transactionRepository.deleteAllByItemId(itemId));
+    }
+
     private TransactionsSyncResponse fetchPage(String accessToken, String cursor) {
         TransactionsSyncRequest request = new TransactionsSyncRequest()
                 .accessToken(accessToken)
@@ -116,8 +114,6 @@ class TransactionsSync {
         List<RemovedTransaction> removed = Objects.requireNonNullElse(page.getRemoved(), List.of());
 
         transactionTemplate.executeWithoutResult(status -> {
-            upsertAccounts(item, page.getAccounts());
-
             List<PlaidTransaction> upserts = Stream.concat(added.stream(), modified.stream())
                     .map(transaction -> toEntity(transaction, item))
                     .toList();
@@ -139,36 +135,6 @@ class TransactionsSync {
     }
 
     private record PageCounts(int added, int modified, int removed) {
-    }
-
-    private void upsertAccounts(PlaidItem item, List<AccountBase> plaidAccounts) {
-        if (plaidAccounts == null || plaidAccounts.isEmpty()) {
-            return;
-        }
-
-        for (AccountBase plaidAccount : plaidAccounts) {
-            PlaidAccount account = accountRepository.findById(plaidAccount.getAccountId())
-                    .orElseGet(() -> new PlaidAccount(
-                            plaidAccount.getAccountId(), item.getItemId(), item.getUserId()));
-            AccountBalance balances = plaidAccount.getBalances();
-            account.updateSnapshot(
-                    Objects.requireNonNullElse(plaidAccount.getName(), "Account"),
-                    plaidAccount.getOfficialName(),
-                    plaidAccount.getMask(),
-                    plaidAccount.getType() == null ? "other" : plaidAccount.getType().getValue(),
-                    plaidAccount.getSubtype() == null ? null : plaidAccount.getSubtype().getValue(),
-                    money(balances == null ? null : balances.getAvailable()),
-                    money(balances == null ? null : balances.getCurrent()),
-                    money(balances == null ? null : balances.getLimit()),
-                    balances == null ? null : balances.getIsoCurrencyCode(),
-                    balances == null ? null : balances.getUnofficialCurrencyCode()
-            );
-            accountRepository.save(account);
-        }
-    }
-
-    private static BigDecimal money(Double amount) {
-        return amount == null ? null : BigDecimal.valueOf(amount);
     }
 
     private static PlaidTransaction toEntity(Transaction transaction, PlaidItem item) {

@@ -14,9 +14,25 @@ _Avoid_: Connection, link, institution
 A single bank, card or investment account within a Plaid item, with its latest balances.
 _Avoid_: Plaid account (outside code that talks to Plaid directly)
 
+**Dropped account**:
+An account Plaid has stopped returning for its Plaid item, such as a closed account or one the user unchecked when relinking. From the day it's dropped it no longer counts toward net worth or appears among the user's accounts. It comes back if Plaid returns it again.
+_Avoid_: Closed account, deleted account
+
 **Selected account**:
 The account the user is currently viewing, remembered across pages and visits. Home and a new spending plan setup both start from it.
 _Avoid_: Current account, active account
+
+**Investment account**:
+An account Plaid types as an investment, such as an IRA, 401(k), brokerage, HSA or 529. A cash HSA or cash-management account Plaid calls a bank account is not one.
+_Avoid_: Portfolio, retirement account (only some are)
+
+**Holding**:
+A position within an investment account: how much of one security it holds and what that's worth.
+_Avoid_: Position, investment
+
+**Net worth**:
+Everything the user owns across all linked accounts minus everything they owe (credit cards and loans), not just their investments.
+_Avoid_: Portfolio value, total balance
 
 **Recurring stream**:
 A payment or deposit Plaid has detected repeating on an account, such as a bill or a paycheck.
@@ -29,8 +45,12 @@ Connecting a new Plaid item, or reconnecting an existing one, and storing its ac
 _Avoid_: Onboarding, token exchange
 
 **Item sync**:
-Bringing a Plaid item's stored accounts, transactions and recurring streams up to date with Plaid. It runs when an item is linked and when Plaid notifies us of changes.
+Bringing a Plaid item's stored accounts, transactions and recurring streams up to date with Plaid, and recording a balance snapshot. It runs when an item is linked and when Plaid notifies us of changes.
 _Avoid_: Refresh, backfill, import
+
+**Balance snapshot**:
+An account's balance as it stood on a given day. Plaid only ever reports today's balance, so snapshots are the only record of past ones, and an account has none from before it was linked.
+_Avoid_: History, data point
 
 ### Spending plan
 

@@ -1,8 +1,13 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
+import com.plaid.client.model.InvestmentsHoldingsGetRequest;
+import com.plaid.client.model.InvestmentsHoldingsGetResponse;
 import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
+import com.plaid.client.model.ItemRemoveRequest;
+import com.plaid.client.model.ItemRemoveResponse;
 import com.plaid.client.model.LinkTokenCreateRequest;
+import com.plaid.client.model.Products;
 import com.plaid.client.model.LinkTokenCreateResponse;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.TestPlaidKeysets;
@@ -21,6 +26,8 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -54,6 +61,12 @@ class PlaidItemLinkingTests {
     @Mock
     private Call<ItemPublicTokenExchangeResponse> exchangeCall;
 
+    @Mock
+    private Call<InvestmentsHoldingsGetResponse> holdingsCall;
+
+    @Mock
+    private Call<ItemRemoveResponse> removeCall;
+
     private final PlaidTokenEncryption tokenEncryption = new PlaidTokenEncryption(
             TestPlaidKeysets.create());
     private PlaidItemLinking linking;
@@ -75,6 +88,29 @@ class PlaidItemLinkingTests {
     }
 
     @Test
+    void everydayLinksAskForTransactions() throws IOException {
+        stubLinkToken();
+
+        linking.createLinkToken(USER_ID);
+
+        LinkTokenCreateRequest request = captureLinkTokenRequest();
+        assertEquals(List.of(Products.TRANSACTIONS), request.getProducts());
+        assertNull(request.getOptionalProducts());
+    }
+
+    @Test
+    void investmentLinksRequireInvestmentsAndAddTransactionsWhereSupported() throws IOException {
+        stubLinkToken();
+
+        assertEquals("link-token", linking.createInvestmentsLinkToken(USER_ID));
+
+        LinkTokenCreateRequest request = captureLinkTokenRequest();
+        assertEquals(List.of(Products.INVESTMENTS), request.getProducts());
+        assertEquals(List.of(Products.TRANSACTIONS), request.getOptionalProducts());
+        assertEquals(WEBHOOK_URL, request.getWebhook());
+    }
+
+    @Test
     void omitsTheWebhookUrlWhenItIsNotConfigured() throws IOException {
         stubLinkToken();
 
@@ -88,7 +124,7 @@ class PlaidItemLinkingTests {
         stubExchange("access-token");
         when(plaidItemRepository.findByItemIdAndUserId("item-id", USER_ID)).thenReturn(Optional.empty());
 
-        assertEquals("item-id", linking.link(USER_ID, "public-token"));
+        assertEquals("item-id", linking.link(USER_ID, "public-token").itemId());
 
         ArgumentCaptor<ItemPublicTokenExchangeRequest> requestCaptor =
                 ArgumentCaptor.forClass(ItemPublicTokenExchangeRequest.class);
@@ -120,6 +156,80 @@ class PlaidItemLinkingTests {
     }
 
     @Test
+    void listsTheUsersOtherItemsAtTheLinkedInstitution() throws IOException {
+        stubExchange("access-token");
+        PlaidItem linked = new PlaidItem("item-id", "encrypted", USER_ID);
+        ReflectionTestUtils.setField(linked, "institutionId", "ins_fidelity");
+        PlaidItem older = new PlaidItem("older-item", "encrypted", USER_ID);
+        when(plaidItemRepository.findById("item-id")).thenReturn(Optional.of(linked));
+        when(plaidItemRepository.findAllByUserIdAndInstitutionIdAndRemovedOnIsNull(USER_ID, "ins_fidelity"))
+                .thenReturn(List.of(linked, older));
+
+        assertEquals(List.of(older), linking.link(USER_ID, "public-token").sameInstitution());
+    }
+
+    @Test
+    void addsInvestmentsToALinkedItemAndSyncsIt() throws IOException {
+        PlaidItem item = storedItem();
+        when(plaidApi.investmentsHoldingsGet(any(InvestmentsHoldingsGetRequest.class))).thenReturn(holdingsCall);
+        when(holdingsCall.execute()).thenReturn(Response.success(new InvestmentsHoldingsGetResponse()));
+
+        assertEquals(new PlaidItemLinking.AddInvestments(true, null), linking.addInvestments(USER_ID, "item-id"));
+
+        verify(itemSync).linked(item);
+    }
+
+    @Test
+    void asksForConsentInLinkUpdateModeWhenPlaidRefusesInvestments() throws IOException {
+        storedItem();
+        when(plaidApi.investmentsHoldingsGet(any(InvestmentsHoldingsGetRequest.class))).thenReturn(holdingsCall);
+        when(holdingsCall.execute()).thenReturn(
+                Response.error(400, ResponseBody.create("{}", MediaType.get("application/json"))));
+        stubLinkToken();
+
+        assertEquals(new PlaidItemLinking.AddInvestments(false, "link-token"),
+                linking.addInvestments(USER_ID, "item-id"));
+
+        LinkTokenCreateRequest request = captureLinkTokenRequest();
+        assertEquals("access-token", request.getAccessToken());
+        assertEquals(List.of(Products.INVESTMENTS), request.getAdditionalConsentedProducts());
+        verifyNoInteractions(itemSync);
+    }
+
+    @Test
+    void removesAnItemFromPlaidBeforeForgettingIt() throws IOException {
+        storedItem();
+        when(plaidApi.itemRemove(any(ItemRemoveRequest.class))).thenReturn(removeCall);
+        when(removeCall.execute()).thenReturn(Response.success(new ItemRemoveResponse()));
+
+        linking.remove(USER_ID, "item-id");
+
+        ArgumentCaptor<ItemRemoveRequest> captor = ArgumentCaptor.forClass(ItemRemoveRequest.class);
+        verify(plaidApi).itemRemove(captor.capture());
+        assertEquals("access-token", captor.getValue().getAccessToken());
+        verify(itemSync).removed("item-id");
+    }
+
+    @Test
+    void keepsAnItemPlaidFailedToRemove() throws IOException {
+        storedItem();
+        when(plaidApi.itemRemove(any(ItemRemoveRequest.class))).thenReturn(removeCall);
+        when(removeCall.execute()).thenThrow(new IOException("Plaid unreachable"));
+
+        assertThrows(PlaidRequestException.class, () -> linking.remove(USER_ID, "item-id"));
+
+        verifyNoInteractions(itemSync);
+    }
+
+    @Test
+    void cannotChangeAnItemTheUserDoesNotHave() {
+        assertThrows(NoSuchElementException.class, () -> linking.addInvestments(USER_ID, "item-id"));
+        assertThrows(NoSuchElementException.class, () -> linking.remove(USER_ID, "item-id"));
+
+        verifyNoInteractions(plaidApi, itemSync);
+    }
+
+    @Test
     void storesNothingWhenPlaidRejectsTheExchange() throws IOException {
         when(plaidApi.itemPublicTokenExchange(any(ItemPublicTokenExchangeRequest.class)))
                 .thenReturn(exchangeCall);
@@ -129,6 +239,14 @@ class PlaidItemLinkingTests {
         assertThrows(PlaidRequestException.class, () -> linking.link(USER_ID, "public-token"));
 
         verifyNoInteractions(plaidItemRepository, itemSync);
+    }
+
+    private PlaidItem storedItem() {
+        PlaidItem item = new PlaidItem(
+                "item-id", tokenEncryption.encrypt("access-token", USER_ID, "item-id"), USER_ID);
+        when(plaidItemRepository.findByItemIdAndUserIdAndRemovedOnIsNull("item-id", USER_ID))
+                .thenReturn(Optional.of(item));
+        return item;
     }
 
     private PlaidItemLinking linking(String webhookUrl) {

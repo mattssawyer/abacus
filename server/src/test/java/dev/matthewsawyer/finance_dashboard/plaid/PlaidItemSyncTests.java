@@ -1,7 +1,12 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
+import com.plaid.client.model.AccountBalance;
 import com.plaid.client.model.AccountBase;
 import com.plaid.client.model.AccountType;
+import com.plaid.client.model.AccountsGetRequest;
+import com.plaid.client.model.AccountsGetResponse;
+import com.plaid.client.model.Item;
+import com.plaid.client.model.Products;
 import com.plaid.client.model.RecurringTransactionFrequency;
 import com.plaid.client.model.Transaction;
 import com.plaid.client.model.TransactionStream;
@@ -11,6 +16,8 @@ import com.plaid.client.model.TransactionsRecurringGetResponse;
 import com.plaid.client.model.TransactionsSyncRequest;
 import com.plaid.client.model.TransactionsSyncResponse;
 import com.plaid.client.request.PlaidApi;
+import dev.matthewsawyer.finance_dashboard.history.BalanceHistory;
+import dev.matthewsawyer.finance_dashboard.history.BalanceHistory.Point;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.model.PlaidRecurringStream;
 import dev.matthewsawyer.finance_dashboard.model.User;
@@ -32,7 +39,11 @@ import retrofit2.Call;
 import retrofit2.Response;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -55,9 +66,12 @@ import static org.mockito.Mockito.when;
 class PlaidItemSyncTests {
 
     private static final String ITEM_ID = "sync-test-item";
+    private static final LocalDate TODAY = LocalDate.of(2026, 9, 24);
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-09-24T15:00:00Z"), ZoneOffset.UTC);
 
     @MockitoBean private PlaidApi plaidApi;
 
+    @Autowired private AccountsSync accountsSync;
     @Autowired private TransactionsSync transactionsSync;
     @Autowired private RecurringStreamsSync recurringStreamsSync;
     @Autowired private PlaidTokenEncryption tokenEncryption;
@@ -66,6 +80,7 @@ class PlaidItemSyncTests {
     @Autowired private PlaidTransactionRepository transactions;
     @Autowired private PlaidRecurringStreamRepository streams;
     @Autowired private UserRepository users;
+    @Autowired private BalanceHistory balanceHistory;
     @Autowired private EntityManager entityManager;
 
     /** Webhook syncs are queued here and run when the test says so. */
@@ -75,13 +90,15 @@ class PlaidItemSyncTests {
     private UUID userId;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         itemSync = new PlaidItemSync(
-                items, transactionsSync, recurringStreamsSync, bucketSorting, queued::add);
+                items, accountsSync, transactionsSync, recurringStreamsSync, bucketSorting, balanceHistory,
+                CLOCK, queued::add);
         userId = users.saveAndFlush(new User("item-sync-test-user")).getId();
         items.saveAndFlush(new PlaidItem(
                 ITEM_ID, tokenEncryption.encrypt("access-token", userId, ITEM_ID), userId));
         entityManager.clear();
+        stubAccounts(List.of(Products.TRANSACTIONS));
     }
 
     @Test
@@ -98,6 +115,81 @@ class PlaidItemSyncTests {
         PlaidItem item = storedItem();
         assertEquals("cursor-1", item.getTransactionsCursor());
         assertNotNull(item.getRecurringSyncedAt());
+    }
+
+    @Test
+    void recordsTodaysBalancesAfterSyncing() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(recurringResponse());
+
+        itemSync.linked(storedItem());
+
+        List<Point> netWorth = balanceHistory.forUser(userId, null, TODAY).netWorth();
+        assertEquals(1, netWorth.size());
+        assertEquals(TODAY, netWorth.get(0).day());
+        assertEquals(0, new BigDecimal("2500").compareTo(netWorth.get(0).value()));
+    }
+
+    @Test
+    void anItemWithoutTransactionsOnlySyncsAccountsAndBalances() throws IOException {
+        stubAccounts(List.of(Products.INVESTMENTS));
+
+        itemSync.linked(storedItem());
+
+        assertEquals(List.of("checking"), accountIds());
+        assertEquals(1, balanceHistory.forUser(userId, null, TODAY).netWorth().size());
+        verify(plaidApi, never()).transactionsSync(any());
+        verify(plaidApi, never()).transactionsRecurringGet(any());
+        verifyNoInteractions(bucketSorting);
+    }
+
+    @Test
+    void syncsOnlyAccountsAndBalancesWhenPlaidReportsNewHoldings() throws IOException {
+        itemSync.notified(ITEM_ID, "HOLDINGS", "DEFAULT_UPDATE");
+        runQueued();
+
+        assertEquals(List.of("checking"), accountIds());
+        assertEquals(1, balanceHistory.forUser(userId, null, TODAY).netWorth().size());
+        verify(plaidApi, never()).transactionsSync(any());
+        verify(plaidApi, never()).transactionsRecurringGet(any());
+    }
+
+    @Test
+    void stillSyncsTransactionsWhenPlaidCannotListTheAccounts() throws IOException {
+        stubAccountsFailure();
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(recurringResponse());
+
+        itemSync.linked(storedItem());
+
+        assertEquals(List.of("txn-1"), transactionIds());
+        assertEquals(List.of("rent"), streamIds());
+    }
+
+    @Test
+    void aRemovedItemKeepsItsAccountsAsDroppedButLosesItsTransactionsAndStreams() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(recurringResponse());
+        itemSync.linked(storedItem());
+
+        itemSync.removed(ITEM_ID);
+
+        entityManager.flush();
+        entityManager.clear();
+        assertEquals(TODAY, accounts.findById("checking").orElseThrow().getDroppedOn());
+        assertTrue(transactionIds().isEmpty());
+        assertTrue(streamIds().isEmpty());
+        assertTrue(storedItem().isRemoved());
+    }
+
+    @Test
+    void ignoresWebhooksForARemovedItem() throws IOException {
+        itemSync.removed(ITEM_ID);
+
+        itemSync.notified(ITEM_ID, "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE");
+        runQueued();
+
+        verifyNoInteractions(plaidApi);
     }
 
     @Test
@@ -225,6 +317,26 @@ class PlaidItemSyncTests {
                         .frequency(RecurringTransactionFrequency.MONTHLY)
                         .isActive(true)))
                 .inflowStreams(List.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubAccounts(List<Products> products) throws IOException {
+        Call<AccountsGetResponse> call = mock(Call.class);
+        when(call.execute()).thenReturn(Response.success(new AccountsGetResponse()
+                .accounts(List.of(new AccountBase()
+                        .accountId("checking")
+                        .name("Checking")
+                        .type(AccountType.DEPOSITORY)
+                        .balances(new AccountBalance().current(2500.0).isoCurrencyCode("USD"))))
+                .item(new Item().itemId(ITEM_ID).products(products))));
+        when(plaidApi.accountsGet(any(AccountsGetRequest.class))).thenReturn(call);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubAccountsFailure() throws IOException {
+        Call<AccountsGetResponse> call = mock(Call.class);
+        when(call.execute()).thenThrow(new IOException("Plaid unreachable"));
+        when(plaidApi.accountsGet(any(AccountsGetRequest.class))).thenReturn(call);
     }
 
     @SuppressWarnings("unchecked")

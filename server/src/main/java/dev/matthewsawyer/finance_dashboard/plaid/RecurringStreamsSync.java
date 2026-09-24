@@ -135,6 +135,11 @@ class RecurringStreamsSync {
                 .categoryDetailed(categoryDetailed);
     }
 
+    /** Deletes the recurring streams of an item the user removed. */
+    void forget(String itemId) {
+        transactionTemplate.executeWithoutResult(status -> streamRepository.deleteAllByItemId(itemId));
+    }
+
     /**
      * Recurring is for named bills and paychecks. Bank interest and other unlabeled credits
      * are technically streams, but they are not useful on the home page or spending plan.

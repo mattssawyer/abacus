@@ -1,6 +1,8 @@
 package dev.matthewsawyer.finance_dashboard.plaid;
 
 import com.plaid.client.model.CountryCode;
+import com.plaid.client.model.InvestmentsHoldingsGetRequest;
+import com.plaid.client.model.ItemRemoveRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.model.LinkTokenCreateRequest;
@@ -13,9 +15,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
-/** Connects a user's Plaid items and stores their access for later syncs. */
+/** Connects and removes a user's Plaid items, and stores their access for later syncs. */
 @Service
 public class PlaidItemLinking {
 
@@ -41,13 +44,30 @@ public class PlaidItemLinking {
 
     /** A short-lived token that opens Plaid Link in the browser for this user. */
     public String createLinkToken(UUID userId) {
-        LinkTokenCreateRequest request = new LinkTokenCreateRequest()
+        return requestLinkToken(linkTokenRequest(userId).products(List.of(Products.TRANSACTIONS)));
+    }
+
+    /**
+     * Like {@link #createLinkToken}, for linking investment accounts. Investments is required, so
+     * Link shows institutions such as 401(k) providers that have no transactions; transactions
+     * are added wherever the institution supports them. Plaid bills investments per item, so
+     * only these links ask for it.
+     */
+    public String createInvestmentsLinkToken(UUID userId) {
+        return requestLinkToken(linkTokenRequest(userId)
+                .products(List.of(Products.INVESTMENTS))
+                .optionalProducts(List.of(Products.TRANSACTIONS)));
+    }
+
+    private static LinkTokenCreateRequest linkTokenRequest(UUID userId) {
+        return new LinkTokenCreateRequest()
                 .user(new LinkTokenCreateRequestUser().clientUserId(userId.toString()))
                 .clientName("Abacus")
-                .products(List.of(Products.TRANSACTIONS))
                 .countryCodes(List.of(CountryCode.US))
                 .language("en");
+    }
 
+    private String requestLinkToken(LinkTokenCreateRequest request) {
         // Items linked without a URL never receive webhooks, so local runs without a tunnel
         // only sync at link time.
         if (!webhookUrl.isBlank()) {
@@ -60,9 +80,9 @@ public class PlaidItemLinking {
 
     /**
      * Exchanges the public token Plaid Link returned, stores the item's encrypted access token and
-     * syncs it. Returns the item id. A failed sync does not fail the link.
+     * syncs it. A failed sync does not fail the link.
      */
-    public String link(UUID userId, String publicToken) {
+    public Linked link(UUID userId, String publicToken) {
         ItemPublicTokenExchangeResponse exchange = PlaidCalls.execute(
                 plaidApi.itemPublicTokenExchange(
                         new ItemPublicTokenExchangeRequest().publicToken(publicToken)),
@@ -78,6 +98,74 @@ public class PlaidItemLinking {
         plaidItemRepository.save(item);
 
         itemSync.linked(item);
-        return exchange.getItemId();
+        return new Linked(exchange.getItemId(), sameInstitution(userId, exchange.getItemId()));
+    }
+
+    /**
+     * Other items the user has at the linked item's institution. Linking an institution again
+     * creates a second item holding the same accounts, which would count twice in net worth.
+     * Empty when the sync couldn't tell which institution the item belongs to.
+     */
+    private List<PlaidItem> sameInstitution(UUID userId, String itemId) {
+        String institutionId = plaidItemRepository.findById(itemId)
+                .map(PlaidItem::getInstitutionId)
+                .orElse(null);
+        if (institutionId == null) {
+            return List.of();
+        }
+        return plaidItemRepository.findAllByUserIdAndInstitutionIdAndRemovedOnIsNull(userId, institutionId)
+                .stream()
+                .filter(other -> !other.getItemId().equals(itemId))
+                .toList();
+    }
+
+    /**
+     * Adds Plaid's investments product to an item already linked for transactions, so an
+     * institution the user has connected never needs a second item. When Plaid needs the user's
+     * consent first, returns a Link update-mode token; once that flow finishes, call this again.
+     *
+     * @throws NoSuchElementException when the user has no such item
+     */
+    public AddInvestments addInvestments(UUID userId, String itemId) {
+        PlaidItem item = activeItem(userId, itemId);
+        String accessToken = tokenEncryption.decrypt(item.getEncryptedAccessToken(), userId, itemId);
+        try {
+            PlaidCalls.execute(plaidApi.investmentsHoldingsGet(
+                    new InvestmentsHoldingsGetRequest().accessToken(accessToken)), "investments holdings get");
+        } catch (PlaidRequestException e) {
+            return new AddInvestments(false, requestLinkToken(linkTokenRequest(userId)
+                    .accessToken(accessToken)
+                    .additionalConsentedProducts(List.of(Products.INVESTMENTS))));
+        }
+
+        // Picks up the new product and fresh investment balances.
+        itemSync.linked(item);
+        return new AddInvestments(true, null);
+    }
+
+    /**
+     * Removes an item from Plaid, which ends its billing, then stops syncing it. Its accounts
+     * stay as dropped accounts so net worth keeps its history.
+     *
+     * @throws NoSuchElementException when the user has no such item
+     */
+    public void remove(UUID userId, String itemId) {
+        PlaidItem item = activeItem(userId, itemId);
+        String accessToken = tokenEncryption.decrypt(item.getEncryptedAccessToken(), userId, itemId);
+        PlaidCalls.execute(plaidApi.itemRemove(new ItemRemoveRequest().accessToken(accessToken)), "item remove");
+        itemSync.removed(itemId);
+    }
+
+    private PlaidItem activeItem(UUID userId, String itemId) {
+        return plaidItemRepository.findByItemIdAndUserIdAndRemovedOnIsNull(itemId, userId)
+                .orElseThrow(() -> new NoSuchElementException("No item " + itemId));
+    }
+
+    /** A linked item, and the user's other items at the same institution. */
+    public record Linked(String itemId, List<PlaidItem> sameInstitution) {
+    }
+
+    /** Either investments were added, or the user must finish Link with {@code linkToken} first. */
+    public record AddInvestments(boolean added, String linkToken) {
     }
 }

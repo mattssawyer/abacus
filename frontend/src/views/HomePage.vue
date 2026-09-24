@@ -8,6 +8,7 @@ import Chart from 'primevue/chart'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import AppSidebar from '../components/AppSidebar.vue'
+import SameInstitutionNotice from '../components/SameInstitutionNotice.vue'
 import TransactionsDialog from '../components/TransactionsDialog.vue'
 import {
   createLinkToken,
@@ -16,6 +17,7 @@ import {
   getSpendingByBucket,
   getTransactions,
   getRecurringTransactions,
+  type PlaidItem,
   type PlaidTransaction,
   type Bucket,
   type RecurringStream,
@@ -79,6 +81,7 @@ const balanceError = computed(() =>
   accountsFailed.value ? 'We couldn’t load your accounts. Please try again.' : '',
 )
 const pendingPublicToken = ref<string>()
+const sameInstitution = ref<PlaidItem[]>([])
 const { user } = useUser()
 const hasConnections = computed(() => itemIds.value.length > 0)
 const hasMultipleAccounts = computed(() => accounts.value.length > 1)
@@ -301,9 +304,10 @@ async function finishLink(publicToken: string) {
   linkError.value = ''
   pendingPublicToken.value = publicToken
   try {
-    const itemId = await exchangePublicToken(publicToken)
+    const { item_id: itemId, same_institution } = await exchangePublicToken(publicToken)
     if (disposed) return
     pendingPublicToken.value = undefined
+    sameInstitution.value = same_institution
     if (!itemIds.value.includes(itemId)) itemIds.value.push(itemId)
     await loadAccounts()
     if (disposed) return
@@ -313,6 +317,11 @@ async function finishLink(publicToken: string) {
   } finally {
     if (!disposed) linking.value = false
   }
+}
+
+function onOlderRemoved() {
+  sameInstitution.value = []
+  void loadConnections()
 }
 
 function retryLink() {
@@ -378,6 +387,14 @@ async function openPlaidLink() {
             <UserButton />
           </div>
         </div>
+
+        <SameInstitutionNotice
+          v-if="sameInstitution.length"
+          class="same-institution-notice"
+          :items="sameInstitution"
+          @removed="onOlderRemoved"
+          @dismiss="sameInstitution = []"
+        />
 
         <section
           v-if="initialLoading"
@@ -808,6 +825,10 @@ h1 {
   font-weight: 550;
   line-height: 1.2;
   letter-spacing: -0.04em;
+}
+
+.same-institution-notice {
+  margin-bottom: 1.125rem;
 }
 
 .overview-heading p {
