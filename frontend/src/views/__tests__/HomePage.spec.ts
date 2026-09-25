@@ -13,6 +13,7 @@ import {
   getTransactionPage,
   getRecurringTransactions,
   removeItem,
+  syncRecurringTransactions,
   type PlaidAccount,
   type PlaidTransaction,
   type RecurringStream,
@@ -32,6 +33,7 @@ vi.mock('../../api/PlaidService', () => ({
   getTransactions: vi.fn(),
   getTransactionPage: vi.fn(),
   getRecurringTransactions: vi.fn(),
+  syncRecurringTransactions: vi.fn<() => Promise<void>>(),
   removeItem: vi.fn(),
 }))
 const clerk = vi.hoisted(() => ({
@@ -777,6 +779,33 @@ describe('homepage recurring transactions', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('No recurring transactions found yet.')
+  })
+
+  it('asks Plaid again for recurring transactions when Sync is pressed', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValueOnce([]).mockResolvedValueOnce([rent])
+    vi.mocked(syncRecurringTransactions).mockResolvedValue()
+    const wrapper = mountHome()
+    await flushPromises()
+
+    await button(wrapper, 'Sync').trigger('click')
+    await flushPromises()
+
+    expect(syncRecurringTransactions).toHaveBeenCalledOnce()
+    expect(wrapper.findAll('.recurring-card .transaction-row')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('No recurring transactions found yet.')
+  })
+
+  it('says so when a recurring sync fails', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(syncRecurringTransactions).mockRejectedValue(new Error('Server unavailable'))
+    const wrapper = mountHome()
+    await flushPromises()
+
+    await button(wrapper, 'Sync').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('We couldn’t sync your recurring transactions.')
   })
 
   it('keeps the rest of the dashboard working when recurring streams fail', async () => {

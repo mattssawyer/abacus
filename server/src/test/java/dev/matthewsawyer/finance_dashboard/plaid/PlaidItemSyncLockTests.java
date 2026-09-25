@@ -5,6 +5,7 @@ import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
 import dev.matthewsawyer.finance_dashboard.sorting.BucketSorting;
 import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.TaskScheduler;
 import org.mockito.stubbing.Answer;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,7 +55,7 @@ class PlaidItemSyncLockTests {
         PlaidItemSync itemSync = new PlaidItemSync(
                 items, accountsSync, transactionsSync, recurringStreamsSync, mock(BucketSorting.class),
                 mock(BalanceHistory.class), Clock.systemUTC(),
-                new TransactionTemplate(mock(PlatformTransactionManager.class)), executor);
+                new TransactionTemplate(mock(PlatformTransactionManager.class)), executor, mock(TaskScheduler.class));
 
         for (int i = 0; i < 4; i++) {
             itemSync.notified("item-id", "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE");

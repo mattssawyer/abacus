@@ -49,7 +49,7 @@ Connecting a new Plaid item, or reconnecting an existing one, and storing its ac
 _Avoid_: Onboarding, token exchange
 
 **Item sync**:
-Bringing a Plaid item's stored accounts, transactions and recurring streams up to date with Plaid, and recording a balance snapshot. It runs when an item is linked and when Plaid notifies us of changes.
+Bringing a Plaid item's stored accounts, transactions and recurring streams up to date with Plaid, and recording a balance snapshot. It runs when an item is linked and when Plaid notifies us of changes. While Plaid has found no recurring streams for an item yet, they are checked again a few times over the next hours, and the user can ask for a check at any time.
 _Avoid_: Refresh, backfill, import
 
 **Balance snapshot**:

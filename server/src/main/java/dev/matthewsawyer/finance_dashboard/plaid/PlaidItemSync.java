@@ -7,12 +7,16 @@ import dev.matthewsawyer.finance_dashboard.repository.PlaidItemRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 
@@ -36,6 +40,14 @@ public class PlaidItemSync {
     private static final String HOLDINGS = "HOLDINGS";
     private static final String DEFAULT_UPDATE = "DEFAULT_UPDATE";
 
+    /**
+     * Waits between checks for an item's recurring streams while Plaid has none yet. Plaid
+     * detects streams in the background after an item's history arrives, so a check right after
+     * linking finds nothing.
+     */
+    private static final List<Duration> RECURRING_RETRY_DELAYS = List.of(
+            Duration.ofMinutes(2), Duration.ofMinutes(10), Duration.ofMinutes(30), Duration.ofHours(2));
+
     /** How much of an item a sync brings up to date; each scope includes the ones before it. */
     private enum Scope { ACCOUNTS, RECURRING, EVERYTHING }
 
@@ -48,7 +60,11 @@ public class PlaidItemSync {
     private final Clock clock;
     private final TransactionTemplate transactionTemplate;
     private final Executor executor;
+    private final TaskScheduler retryScheduler;
     private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
+    /** Recurring re-checks scheduled so far for items that have no streams yet. */
+    private final Map<String, Integer> recurringRetries = new ConcurrentHashMap<>();
+    private final Set<String> recurringRetryPending = ConcurrentHashMap.newKeySet();
 
     PlaidItemSync(
             PlaidItemRepository plaidItemRepository,
@@ -59,7 +75,8 @@ public class PlaidItemSync {
             BalanceHistory balanceHistory,
             Clock clock,
             TransactionTemplate transactionTemplate,
-            @Qualifier("plaidSyncExecutor") Executor executor
+            @Qualifier("plaidSyncExecutor") Executor executor,
+            @Qualifier("plaidRetryScheduler") TaskScheduler retryScheduler
     ) {
         this.plaidItemRepository = plaidItemRepository;
         this.accountsSync = accountsSync;
@@ -70,6 +87,7 @@ public class PlaidItemSync {
         this.clock = clock;
         this.transactionTemplate = transactionTemplate;
         this.executor = executor;
+        this.retryScheduler = retryScheduler;
     }
 
     /** Syncs a newly linked or relinked item before returning, so its data is there right away. */
@@ -80,6 +98,11 @@ public class PlaidItemSync {
     /** Refreshes an item's accounts and details from Plaid before returning. */
     public void refreshAccounts(String itemId) {
         syncUnderLock(itemId, Scope.ACCOUNTS);
+    }
+
+    /** Asks Plaid for an item's recurring streams again before returning. */
+    public void recheckRecurring(String itemId) {
+        syncUnderLock(itemId, Scope.RECURRING);
     }
 
     /**
@@ -152,7 +175,7 @@ public class PlaidItemSync {
                 bucketSorting.sortLater(item.getUserId());
             }
             if (hasTransactions && scope != Scope.ACCOUNTS) {
-                run("Recurring stream", item, () -> recurringStreamsSync.sync(item));
+                syncRecurring(item);
             }
             run("Balance snapshot", item, () -> balanceHistory.record(itemId, today));
         }
@@ -169,6 +192,42 @@ public class PlaidItemSync {
             log.warn("Accounts sync failed for item {}", item.getItemId(), e);
             return true;
         }
+    }
+
+    /**
+     * Until Plaid has streams for the item, checks again later, waiting longer each time. Then it
+     * stops and waits for Plaid's next webhook, since an account may have no recurring payments.
+     * At most one re-check is pending per item.
+     */
+    private void syncRecurring(PlaidItem item) {
+        String itemId = item.getItemId();
+        int stored;
+        try {
+            stored = recurringStreamsSync.sync(item);
+        } catch (RuntimeException e) {
+            log.warn("Recurring stream sync failed for item {}", itemId, e);
+            stored = 0;
+        }
+        if (stored > 0) {
+            recurringRetries.remove(itemId);
+            return;
+        }
+        if (recurringRetryPending.contains(itemId)) {
+            return;
+        }
+        int retry = recurringRetries.merge(itemId, 1, Integer::sum);
+        if (retry > RECURRING_RETRY_DELAYS.size()) {
+            recurringRetries.remove(itemId);
+            log.info("Still no recurring streams for item {}; waiting for Plaid", itemId);
+            return;
+        }
+        Duration delay = RECURRING_RETRY_DELAYS.get(retry - 1);
+        log.info("No recurring streams for item {} yet; checking again in {}", itemId, delay);
+        recurringRetryPending.add(itemId);
+        retryScheduler.schedule(() -> {
+            recurringRetryPending.remove(itemId);
+            syncUnderLock(itemId, Scope.RECURRING);
+        }, clock.instant().plus(delay));
     }
 
     private static void run(String kind, PlaidItem item, Runnable sync) {

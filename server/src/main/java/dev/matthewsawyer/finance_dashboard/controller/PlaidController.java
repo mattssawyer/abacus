@@ -210,6 +210,14 @@ public class PlaidController {
                 found.getTotalElements());
     }
 
+    /** Asks Plaid again for recurring streams; fetch them afterwards to see what changed. */
+    @PostMapping("/transactions/recurring/sync")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void syncRecurringTransactions(@AuthenticationPrincipal Jwt jwt) {
+        User user = userService.getOrCreateUser(jwt);
+        itemLinking.recheckRecurring(user.getId());
+    }
+
     @GetMapping("/transactions/recurring")
     public Map<String, List<RecurringStreamResponse>> getRecurringTransactions(
             @AuthenticationPrincipal Jwt jwt,

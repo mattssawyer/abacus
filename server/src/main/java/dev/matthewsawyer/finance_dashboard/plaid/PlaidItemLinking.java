@@ -7,6 +7,7 @@ import com.plaid.client.model.ItemPublicTokenExchangeRequest;
 import com.plaid.client.model.ItemPublicTokenExchangeResponse;
 import com.plaid.client.model.LinkTokenCreateRequest;
 import com.plaid.client.model.LinkTokenCreateRequestUser;
+import com.plaid.client.model.LinkTokenTransactions;
 import com.plaid.client.model.Products;
 import com.plaid.client.request.PlaidApi;
 import dev.matthewsawyer.finance_dashboard.model.PlaidItem;
@@ -21,6 +22,12 @@ import java.util.UUID;
 /** Connects and removes a user's Plaid items, and stores their access for later syncs. */
 @Service
 public class PlaidItemLinking {
+
+    /**
+     * Transaction history requested for new links. Plaid's default is 90 days, and it recommends
+     * at least 180 for detecting recurring streams; 730 is the most it offers.
+     */
+    private static final int DAYS_OF_HISTORY = 730;
 
     private final PlaidApi plaidApi;
     private final PlaidItemRepository plaidItemRepository;
@@ -44,7 +51,9 @@ public class PlaidItemLinking {
 
     /** A short-lived token that opens Plaid Link in the browser for this user. */
     public String createLinkToken(UUID userId) {
-        return requestLinkToken(linkTokenRequest(userId).products(List.of(Products.TRANSACTIONS)));
+        return requestLinkToken(linkTokenRequest(userId)
+                .products(List.of(Products.TRANSACTIONS))
+                .transactions(new LinkTokenTransactions().daysRequested(DAYS_OF_HISTORY)));
     }
 
     /**
@@ -56,7 +65,8 @@ public class PlaidItemLinking {
     public String createInvestmentsLinkToken(UUID userId) {
         return requestLinkToken(linkTokenRequest(userId)
                 .products(List.of(Products.INVESTMENTS))
-                .optionalProducts(List.of(Products.TRANSACTIONS)));
+                .optionalProducts(List.of(Products.TRANSACTIONS))
+                .transactions(new LinkTokenTransactions().daysRequested(DAYS_OF_HISTORY)));
     }
 
     private static LinkTokenCreateRequest linkTokenRequest(UUID userId) {
@@ -168,6 +178,13 @@ public class PlaidItemLinking {
         String accessToken = tokenEncryption.decrypt(item.getEncryptedAccessToken(), userId, itemId);
         PlaidCalls.execute(plaidApi.itemRemove(new ItemRemoveRequest().accessToken(accessToken)), "item remove");
         itemSync.removed(itemId);
+    }
+
+    /** Asks Plaid again for the recurring streams of each item the user has linked. */
+    public void recheckRecurring(UUID userId) {
+        for (PlaidItem item : plaidItemRepository.findAllByUserIdAndRemovedOnIsNullOrderByItemIdAsc(userId)) {
+            itemSync.recheckRecurring(item.getItemId());
+        }
     }
 
     private PlaidItem activeItem(UUID userId, String itemId) {

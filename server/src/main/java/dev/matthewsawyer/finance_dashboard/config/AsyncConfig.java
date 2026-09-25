@@ -3,6 +3,7 @@ package dev.matthewsawyer.finance_dashboard.config;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration
 public class AsyncConfig {
@@ -16,6 +17,15 @@ public class AsyncConfig {
         executor.setQueueCapacity(50);
         executor.setThreadNamePrefix("plaid-sync-");
         return executor;
+    }
+
+    /** Runs delayed re-checks of Plaid data that wasn't ready yet. */
+    @Bean("plaidRetryScheduler")
+    ThreadPoolTaskScheduler plaidRetryScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix("plaid-retry-");
+        return scheduler;
     }
 
     /**
