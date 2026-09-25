@@ -53,7 +53,8 @@ class RecurringStreamsSync {
         this.transactionTemplate = transactionTemplate;
     }
 
-    void sync(PlaidItem item) {
+    /** Returns how many streams were stored; none when Plaid hasn't detected any yet. */
+    int sync(PlaidItem item) {
         String itemId = item.getItemId();
         log.info("Starting recurring stream sync for item {}", itemId);
 
@@ -78,6 +79,7 @@ class RecurringStreamsSync {
         });
 
         log.info("Stored {} recurring streams for item {}", streams.size(), itemId);
+        return streams.size();
     }
 
     private static List<PlaidRecurringStream> mapStreams(

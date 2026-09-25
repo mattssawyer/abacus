@@ -18,6 +18,7 @@ import {
   getSpendingByBucket,
   getTransactions,
   getRecurringTransactions,
+  syncRecurringTransactions,
   type PlaidItem,
   type PlaidTransaction,
   type Bucket,
@@ -54,6 +55,9 @@ const linkError = ref('')
 const initialLoading = ref(true)
 const loadingTransactions = ref(false)
 const loadingRecurring = ref(false)
+const syncingRecurring = ref(false)
+// Whether the recurring error came from Sync, so trying again syncs rather than just reloading.
+const recurringSyncFailed = ref(false)
 const loadingSpending = ref(false)
 const connectionError = ref('')
 const transactionsError = ref('')
@@ -304,6 +308,7 @@ async function loadRecurring() {
   if (!itemIds.value.length) return
   loadingRecurring.value = true
   recurringError.value = ''
+  recurringSyncFailed.value = false
   try {
     const streams = await getRecurringTransactions(selectedAccountId.value, RECURRING_STREAM_COUNT)
     if (!disposed) recurring.value = streams.slice(0, RECURRING_STREAM_COUNT)
@@ -311,6 +316,23 @@ async function loadRecurring() {
     if (!disposed) recurringError.value = 'We couldn’t load your recurring transactions.'
   } finally {
     if (!disposed) loadingRecurring.value = false
+  }
+}
+
+async function syncRecurring() {
+  syncingRecurring.value = true
+  recurringError.value = ''
+  recurringSyncFailed.value = false
+  try {
+    await syncRecurringTransactions()
+    if (disposed) return
+    await loadRecurring()
+  } catch {
+    if (disposed) return
+    recurringError.value = 'We couldn’t sync your recurring transactions.'
+    recurringSyncFailed.value = true
+  } finally {
+    if (!disposed) syncingRecurring.value = false
   }
 }
 
@@ -579,7 +601,18 @@ async function openPlaidLink() {
               aria-labelledby="recurring-heading"
               :aria-busy="loadingRecurring"
             >
-              <h2 id="recurring-heading" class="card-label">Recurring</h2>
+              <div class="card-heading">
+                <h2 id="recurring-heading" class="card-label">Recurring</h2>
+                <Button
+                  :label="syncingRecurring ? 'Syncing…' : 'Sync'"
+                  severity="secondary"
+                  size="small"
+                  text
+                  class="view-all-button"
+                  :disabled="syncingRecurring || loadingRecurring"
+                  @click="syncRecurring"
+                />
+              </div>
               <div
                 v-if="loadingRecurring"
                 class="transactions-loading"
@@ -595,12 +628,13 @@ async function openPlaidLink() {
                   label="Try again"
                   severity="secondary"
                   class="retry-button"
-                  @click="loadRecurring"
+                  @click="recurringSyncFailed ? syncRecurring() : loadRecurring()"
                 />
               </div>
 
               <p v-else-if="!recurring.length" class="transactions-empty">
-                No recurring transactions found yet.
+                No recurring transactions found yet. Plaid can take up to a day to find them
+                after you link a bank.
               </p>
 
               <ul v-else class="transactions-list" tabindex="0">

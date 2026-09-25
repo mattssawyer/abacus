@@ -181,6 +181,11 @@ export async function getTransactionPage(
   return data
 }
 
+/** Asks Plaid again for recurring transactions; load them afterwards to see what changed. */
+export async function syncRecurringTransactions(): Promise<void> {
+  await apiClient.post('/plaid/transactions/recurring/sync')
+}
+
 export async function getRecurringTransactions(
   accountId?: string,
   limit?: number,

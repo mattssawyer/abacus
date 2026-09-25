@@ -28,11 +28,14 @@ import dev.matthewsawyer.finance_dashboard.repository.PlaidRecurringStreamReposi
 import dev.matthewsawyer.finance_dashboard.repository.PlaidTransactionRepository;
 import dev.matthewsawyer.finance_dashboard.repository.UserRepository;
 import jakarta.persistence.EntityManager;
+import okhttp3.MediaType;
+import okhttp3.ResponseBody;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -42,17 +45,21 @@ import retrofit2.Response;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -88,6 +95,10 @@ class PlaidItemSyncTests {
     /** Webhook syncs are queued here and run when the test says so. */
     private final List<Runnable> queued = new ArrayList<>();
     private final BucketSorting bucketSorting = mock(BucketSorting.class);
+    /** Recurring re-checks, with how long each waits, held until the test runs them. */
+    private final List<Runnable> retries = new ArrayList<>();
+    private final List<Duration> retryDelays = new ArrayList<>();
+    private final List<ScheduledFuture<?>> retryFutures = new ArrayList<>();
     private PlaidItemSync itemSync;
     private UUID userId;
 
@@ -95,7 +106,7 @@ class PlaidItemSyncTests {
     void setUp() throws IOException {
         itemSync = new PlaidItemSync(
                 items, accountsSync, transactionsSync, recurringStreamsSync, bucketSorting, balanceHistory,
-                CLOCK, transactionTemplate, queued::add);
+                CLOCK, transactionTemplate, queued::add, retryScheduler());
         userId = users.saveAndFlush(new User("item-sync-test-user")).getId();
         items.saveAndFlush(new PlaidItem(
                 ITEM_ID, tokenEncryption.encrypt("access-token", userId, ITEM_ID), userId));
@@ -263,6 +274,94 @@ class PlaidItemSyncTests {
         assertNotNull(item.getRecurringSyncedAt());
     }
 
+    @Test
+    void checksAgainLaterWhilePlaidHasNoRecurringStreams() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+
+        itemSync.linked(storedItem());
+
+        assertTrue(streamIds().isEmpty());
+        assertEquals(List.of(Duration.ofMinutes(2)), retryDelays);
+
+        stubRecurring(recurringResponse());
+        runRetries();
+
+        assertEquals(List.of("rent"), streamIds());
+        assertEquals(List.of(Duration.ofMinutes(2)), retryDelays);
+    }
+
+    @Test
+    void checksAgainLaterWhenPlaidSaysRecurringStreamsAreNotReady() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurringNotReady();
+
+        itemSync.linked(storedItem());
+
+        assertEquals(List.of(Duration.ofMinutes(2)), retryDelays);
+    }
+
+    @Test
+    void waitsLongerBetweenChecksAndThenStops() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+
+        itemSync.linked(storedItem());
+        for (int i = 0; i < 5; i++) {
+            runRetries();
+        }
+
+        assertEquals(List.of(Duration.ofMinutes(2), Duration.ofMinutes(10), Duration.ofMinutes(30),
+                Duration.ofHours(2)), retryDelays);
+        assertTrue(retries.isEmpty());
+    }
+
+    @Test
+    void keepsOneCheckPendingWhenAWebhookAlsoFindsNoStreams() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+
+        itemSync.linked(storedItem());
+        itemSync.notified(ITEM_ID, "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE");
+        runQueued();
+
+        assertEquals(1, retries.size());
+    }
+
+    @Test
+    void recheckingOnRequestStoresStreamsPlaidHasSinceFound() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+        itemSync.linked(storedItem());
+
+        stubRecurring(recurringResponse());
+        itemSync.recheckRecurring(ITEM_ID);
+
+        assertEquals(List.of("rent"), streamIds());
+        verify(plaidApi).transactionsSync(any());
+    }
+
+    @Test
+    void recheckingOnRequestReportsWhenPlaidFails() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurringNotReady();
+
+        assertThrows(PlaidRequestException.class, () -> itemSync.recheckRecurring(ITEM_ID));
+        assertEquals(List.of(Duration.ofMinutes(2)), retryDelays);
+    }
+
+    @Test
+    void cancelsThePendingCheckOnceStreamsTurnUp() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+        itemSync.linked(storedItem());
+
+        stubRecurring(recurringResponse());
+        itemSync.recheckRecurring(ITEM_ID);
+
+        verify(retryFutures.get(0)).cancel(false);
+    }
+
     private void runQueued() {
         List<Runnable> tasks = List.copyOf(queued);
         queued.clear();
@@ -309,6 +408,28 @@ class PlaidItemSyncTests {
                 .hasMore(false);
     }
 
+    private TaskScheduler retryScheduler() {
+        TaskScheduler scheduler = mock(TaskScheduler.class);
+        doAnswer(invocation -> {
+            retries.add(invocation.getArgument(0));
+            retryDelays.add(Duration.between(CLOCK.instant(), invocation.<Instant>getArgument(1)));
+            ScheduledFuture<?> future = mock(ScheduledFuture.class);
+            retryFutures.add(future);
+            return future;
+        }).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
+        return scheduler;
+    }
+
+    private void runRetries() {
+        List<Runnable> due = List.copyOf(retries);
+        retries.clear();
+        due.forEach(Runnable::run);
+    }
+
+    private static TransactionsRecurringGetResponse noStreams() {
+        return new TransactionsRecurringGetResponse().outflowStreams(List.of()).inflowStreams(List.of());
+    }
+
     private static TransactionsRecurringGetResponse recurringResponse() {
         return new TransactionsRecurringGetResponse()
                 .outflowStreams(List.of(new TransactionStream()
@@ -353,6 +474,16 @@ class PlaidItemSyncTests {
         Call<TransactionsSyncResponse> call = mock(Call.class);
         when(call.execute()).thenThrow(new IOException("Plaid unreachable"));
         when(plaidApi.transactionsSync(any(TransactionsSyncRequest.class))).thenReturn(call);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubRecurringNotReady() throws IOException {
+        Call<TransactionsRecurringGetResponse> call = mock(Call.class);
+        when(call.execute()).thenReturn(Response.error(400, ResponseBody.create(
+                "{\"error_type\":\"ITEM_ERROR\",\"error_code\":\"PRODUCT_NOT_READY\"}",
+                MediaType.get("application/json"))));
+        when(plaidApi.transactionsRecurringGet(any(TransactionsRecurringGetRequest.class)))
+                .thenReturn(call);
     }
 
     @SuppressWarnings("unchecked")
