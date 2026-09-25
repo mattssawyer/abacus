@@ -637,8 +637,43 @@ describe('homepage spending breakdown', () => {
     await flushPromises()
 
     const prompt = wrapper.get('.spending-plan-prompt')
-    expect(prompt.text()).toBe('Create your spending plan to see your spending sorted into buckets.')
+    expect(prompt.text()).toBe(
+      'Create your spending plan to see your spending sorted into buckets.',
+    )
     expect(prompt.get('a').attributes('href')).toBe('/spending-plan')
+  })
+
+  it('charts Plaid categories instead of buckets when there is no plan', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getSpendingPlan).mockResolvedValue(null)
+    const wrapper = mountHome()
+    await flushPromises()
+
+    const slices = wrapper.findAll('.chart-stub li').map((slice) => slice.text())
+    expect(slices).toEqual(['Rent & utilities: 1450', 'Transfers out: 300', 'Food & drink: 94.5'])
+    const rows = wrapper.findAll('.spending-legend > li > button')
+    expect(rows.map((row) => row.text())).toEqual([
+      'Rent & utilities$1,450.00',
+      'Transfers out$300.00',
+      'Food & drink$94.50',
+    ])
+    const colors = rows.map((row) => row.get('.spending-swatch').attributes('style'))
+    expect(new Set(colors).size).toBe(3)
+
+    const food = rows[2]!
+    expect(food.attributes('aria-expanded')).toBe('false')
+    await food.trigger('click')
+
+    expect(food.attributes('aria-expanded')).toBe('true')
+    const transactions = wrapper
+      .get('[aria-label="Food & drink transactions"]')
+      .findAll('.spending-transaction-row')
+      .map((row) => row.text())
+    expect(transactions).toEqual([
+      'Coffee ShopSep 17$12.00',
+      'Whole FoodsSep 14$60.00',
+      "Trader Joe'sSep 3$22.50",
+    ])
   })
 
   it('does not ask for a spending plan once there is one', async () => {
