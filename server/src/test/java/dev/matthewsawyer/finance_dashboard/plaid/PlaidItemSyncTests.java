@@ -52,9 +52,11 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -96,6 +98,7 @@ class PlaidItemSyncTests {
     /** Recurring re-checks, with how long each waits, held until the test runs them. */
     private final List<Runnable> retries = new ArrayList<>();
     private final List<Duration> retryDelays = new ArrayList<>();
+    private final List<ScheduledFuture<?>> retryFutures = new ArrayList<>();
     private PlaidItemSync itemSync;
     private UUID userId;
 
@@ -338,6 +341,27 @@ class PlaidItemSyncTests {
         verify(plaidApi).transactionsSync(any());
     }
 
+    @Test
+    void recheckingOnRequestReportsWhenPlaidFails() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurringNotReady();
+
+        assertThrows(PlaidRequestException.class, () -> itemSync.recheckRecurring(ITEM_ID));
+        assertEquals(List.of(Duration.ofMinutes(2)), retryDelays);
+    }
+
+    @Test
+    void cancelsThePendingCheckOnceStreamsTurnUp() throws IOException {
+        stubTransactionsSync(transactionsPage("cursor-1"));
+        stubRecurring(noStreams());
+        itemSync.linked(storedItem());
+
+        stubRecurring(recurringResponse());
+        itemSync.recheckRecurring(ITEM_ID);
+
+        verify(retryFutures.get(0)).cancel(false);
+    }
+
     private void runQueued() {
         List<Runnable> tasks = List.copyOf(queued);
         queued.clear();
@@ -389,7 +413,9 @@ class PlaidItemSyncTests {
         doAnswer(invocation -> {
             retries.add(invocation.getArgument(0));
             retryDelays.add(Duration.between(CLOCK.instant(), invocation.<Instant>getArgument(1)));
-            return null;
+            ScheduledFuture<?> future = mock(ScheduledFuture.class);
+            retryFutures.add(future);
+            return future;
         }).when(scheduler).schedule(any(Runnable.class), any(Instant.class));
         return scheduler;
     }

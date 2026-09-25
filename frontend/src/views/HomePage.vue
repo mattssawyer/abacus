@@ -56,6 +56,8 @@ const initialLoading = ref(true)
 const loadingTransactions = ref(false)
 const loadingRecurring = ref(false)
 const syncingRecurring = ref(false)
+// Whether the recurring error came from Sync, so trying again syncs rather than just reloading.
+const recurringSyncFailed = ref(false)
 const loadingSpending = ref(false)
 const connectionError = ref('')
 const transactionsError = ref('')
@@ -306,6 +308,7 @@ async function loadRecurring() {
   if (!itemIds.value.length) return
   loadingRecurring.value = true
   recurringError.value = ''
+  recurringSyncFailed.value = false
   try {
     const streams = await getRecurringTransactions(selectedAccountId.value, RECURRING_STREAM_COUNT)
     if (!disposed) recurring.value = streams.slice(0, RECURRING_STREAM_COUNT)
@@ -319,12 +322,15 @@ async function loadRecurring() {
 async function syncRecurring() {
   syncingRecurring.value = true
   recurringError.value = ''
+  recurringSyncFailed.value = false
   try {
     await syncRecurringTransactions()
     if (disposed) return
     await loadRecurring()
   } catch {
-    if (!disposed) recurringError.value = 'We couldn’t sync your recurring transactions.'
+    if (disposed) return
+    recurringError.value = 'We couldn’t sync your recurring transactions.'
+    recurringSyncFailed.value = true
   } finally {
     if (!disposed) syncingRecurring.value = false
   }
@@ -622,7 +628,7 @@ async function openPlaidLink() {
                   label="Try again"
                   severity="secondary"
                   class="retry-button"
-                  @click="loadRecurring"
+                  @click="recurringSyncFailed ? syncRecurring() : loadRecurring()"
                 />
               </div>
 

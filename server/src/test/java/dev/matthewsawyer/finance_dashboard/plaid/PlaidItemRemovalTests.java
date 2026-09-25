@@ -13,6 +13,7 @@ import java.time.Clock;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.RETURNS_MOCKS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -28,7 +29,7 @@ class PlaidItemRemovalTests {
         PlaidItemSync itemSync = new PlaidItemSync(
                 items, mock(AccountsSync.class), mock(TransactionsSync.class), recurringStreamsSync,
                 mock(BucketSorting.class), mock(BalanceHistory.class), Clock.systemUTC(),
-                new TransactionTemplate(transactionManager), Runnable::run, mock(TaskScheduler.class));
+                new TransactionTemplate(transactionManager), Runnable::run, mock(TaskScheduler.class, RETURNS_MOCKS));
 
         assertThrows(IllegalStateException.class, () -> itemSync.removed("item-id"));
 

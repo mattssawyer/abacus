@@ -180,10 +180,25 @@ public class PlaidItemLinking {
         itemSync.removed(itemId);
     }
 
-    /** Asks Plaid again for the recurring streams of each item the user has linked. */
+    /**
+     * Asks Plaid again for the recurring streams of each item the user has linked. Every item is
+     * tried before any failure is thrown.
+     *
+     * @throws RuntimeException the first failure, e.g. a {@link PlaidRequestException}
+     */
     public void recheckRecurring(UUID userId) {
+        RuntimeException firstFailure = null;
         for (PlaidItem item : plaidItemRepository.findAllByUserIdAndRemovedOnIsNullOrderByItemIdAsc(userId)) {
-            itemSync.recheckRecurring(item.getItemId());
+            try {
+                itemSync.recheckRecurring(item.getItemId());
+            } catch (RuntimeException e) {
+                if (firstFailure == null) {
+                    firstFailure = e;
+                }
+            }
+        }
+        if (firstFailure != null) {
+            throw firstFailure;
         }
     }
 

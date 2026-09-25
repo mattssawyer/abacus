@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.RETURNS_MOCKS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -55,7 +56,7 @@ class PlaidItemSyncLockTests {
         PlaidItemSync itemSync = new PlaidItemSync(
                 items, accountsSync, transactionsSync, recurringStreamsSync, mock(BucketSorting.class),
                 mock(BalanceHistory.class), Clock.systemUTC(),
-                new TransactionTemplate(mock(PlatformTransactionManager.class)), executor, mock(TaskScheduler.class));
+                new TransactionTemplate(mock(PlatformTransactionManager.class)), executor, mock(TaskScheduler.class, RETURNS_MOCKS));
 
         for (int i = 0; i < 4; i++) {
             itemSync.notified("item-id", "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE");

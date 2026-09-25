@@ -808,6 +808,24 @@ describe('homepage recurring transactions', () => {
     expect(wrapper.text()).toContain('We couldn’t sync your recurring transactions.')
   })
 
+  it('syncs again when trying again after a failed sync', async () => {
+    vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
+    vi.mocked(getRecurringTransactions).mockResolvedValueOnce([]).mockResolvedValue([rent])
+    vi.mocked(syncRecurringTransactions)
+      .mockRejectedValueOnce(new Error('Server unavailable'))
+      .mockResolvedValue()
+    const wrapper = mountHome()
+    await flushPromises()
+    await button(wrapper, 'Sync').trigger('click')
+    await flushPromises()
+
+    await button(wrapper, 'Try again').trigger('click')
+    await flushPromises()
+
+    expect(syncRecurringTransactions).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.recurring-card .transaction-row')).toHaveLength(1)
+  })
+
   it('keeps the rest of the dashboard working when recurring streams fail', async () => {
     vi.mocked(getLinkedItemIds).mockResolvedValue(['saved-item'])
     vi.mocked(getRecurringTransactions).mockRejectedValueOnce(new Error('Server unavailable'))
