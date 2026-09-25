@@ -21,7 +21,6 @@ import {
   syncRecurringTransactions,
   type PlaidItem,
   type PlaidTransaction,
-  type Bucket,
   type RecurringStream,
   type SpendingByBucket,
 } from '../api/PlaidService'
@@ -34,6 +33,7 @@ import {
   transactionLabel,
 } from '../api/plaidLabels'
 import { accountLabel, useSelectedAccount } from '../accounts/useSelectedAccount'
+import { spendingByCategory } from '../spending/byCategory'
 
 const RECENT_TRANSACTION_COUNT = 25
 const RECURRING_STREAM_COUNT = 20
@@ -70,10 +70,11 @@ const recurring = ref<RecurringStream[]>([])
 const spending = ref<SpendingByBucket>()
 // Unknown until loaded, so the plan prompt never flashes for someone who has a plan.
 const hasSpendingPlan = ref<boolean>()
-// Buckets start open and categories start closed, so buckets track what's closed. Category keys
-// include the bucket, since the same category can appear under two buckets.
-const closedBuckets = ref(new Set<Bucket>())
-const openCategories = ref(new Set<string>())
+// Whether there's a plan decides how spending is charted, so hold the chart until it's known.
+const checkingSpendingPlan = ref(false)
+// Legend rows the user has flipped from how they start. Buckets start open and categories start
+// closed. Category keys include the bucket, since the same category can appear under two buckets.
+const toggledRows = ref(new Set<string>())
 let unsortedRecheck: ReturnType<typeof setTimeout> | undefined
 let unsortedRechecks = 0
 const {
@@ -111,17 +112,32 @@ const spendingMonth = computed(() =>
       )
     : '',
 )
-const spendingLegend = computed(() =>
-  (spending.value?.buckets ?? []).map((entry) => ({
+// Before there's a plan nothing is sorted into buckets, so chart Plaid's categories instead.
+const chartsCategories = computed(() => hasSpendingPlan.value === false)
+const spendingLegend = computed(() => {
+  if (!spending.value) return []
+  if (chartsCategories.value)
+    return spendingByCategory(spending.value).map((entry) => ({
+      ...entry,
+      key: entry.category,
+      label: categoryLabel(entry.category),
+      startsOpen: false,
+      categories: undefined,
+    }))
+  return spending.value.buckets.map((entry) => ({
     ...entry,
     ...BUCKET_STYLES[entry.bucket],
+    key: entry.bucket,
+    startsOpen: true,
+    transactions: undefined,
     categories: entry.categories.map((category) => ({
       ...category,
       key: `${entry.bucket}/${category.category}`,
       label: categoryLabel(category.category),
+      startsOpen: false,
     })),
-  })),
-)
+  }))
+})
 const spendingChartData = computed(() => ({
   labels: spendingLegend.value.map((entry) => entry.label),
   datasets: [
@@ -163,8 +179,12 @@ onUnmounted(() => {
   handler?.destroy()
 })
 
-function toggle<T>(set: Set<T>, key: T) {
-  if (!set.delete(key)) set.add(key)
+function isOpen(row: { key: string; startsOpen: boolean }) {
+  return row.startsOpen !== toggledRows.value.has(row.key)
+}
+
+function toggle(row: { key: string }) {
+  if (!toggledRows.value.delete(row.key)) toggledRows.value.add(row.key)
 }
 
 function formatBalance(amount: number | null) {
@@ -245,11 +265,14 @@ function onAccountChange(event: Event) {
 
 async function loadSpendingPlan() {
   if (!itemIds.value.length) return
+  checkingSpendingPlan.value = true
   try {
     const plan = await getSpendingPlan()
     if (!disposed) hasSpendingPlan.value = plan !== null
   } catch {
     // The prompt is only a nudge, so leave it hidden when the plan can't be checked.
+  } finally {
+    if (!disposed) checkingSpendingPlan.value = false
   }
 }
 
@@ -633,8 +656,8 @@ async function openPlaidLink() {
               </div>
 
               <p v-else-if="!recurring.length" class="transactions-empty">
-                No recurring transactions found yet. Plaid can take up to a day to find them
-                after you link a bank.
+                No recurring transactions found yet. Plaid can take up to a day to find them after
+                you link a bank.
               </p>
 
               <ul v-else class="transactions-list" tabindex="0">
@@ -661,13 +684,13 @@ async function openPlaidLink() {
             class="panel spending-card"
             role="region"
             aria-labelledby="spending-heading"
-            :aria-busy="loadingSpending"
+            :aria-busy="loadingSpending || checkingSpendingPlan"
           >
             <h2 id="spending-heading" class="card-label">
               Spending<template v-if="spendingMonth"> · {{ spendingMonth }}</template>
             </h2>
             <div
-              v-if="loadingSpending"
+              v-if="loadingSpending || checkingSpendingPlan"
               class="spending-chart"
               role="status"
               aria-label="Loading your spending breakdown"
@@ -700,7 +723,7 @@ async function openPlaidLink() {
                   :data="spendingChartData"
                   :options="spendingChartOptions"
                   class="spending-chart-canvas"
-                  :aria-label="`Spending by bucket for ${spendingMonth}`"
+                  :aria-label="`Spending by ${chartsCategories ? 'category' : 'bucket'} for ${spendingMonth}`"
                 />
                 <div class="spending-total" aria-hidden="true">
                   <span class="spending-total-amount">{{ formatWholeDollars(spendingTotal) }}</span>
@@ -710,15 +733,15 @@ async function openPlaidLink() {
               <ul class="spending-legend">
                 <li
                   v-for="entry in spendingLegend"
-                  :key="entry.bucket"
-                  :class="{ 'spending-open': !closedBuckets.has(entry.bucket) }"
+                  :key="entry.key"
+                  :class="{ 'spending-open': isOpen(entry) }"
                 >
                   <button
                     type="button"
                     class="spending-legend-row"
-                    :aria-expanded="!closedBuckets.has(entry.bucket)"
-                    :aria-controls="`spending-bucket-${entry.bucket}`"
-                    @click="toggle(closedBuckets, entry.bucket)"
+                    :aria-expanded="isOpen(entry)"
+                    :aria-controls="`spending-row-${entry.key}`"
+                    @click="toggle(entry)"
                   >
                     <span
                       class="spending-swatch"
@@ -735,22 +758,26 @@ async function openPlaidLink() {
                     />
                   </button>
                   <div
-                    :id="`spending-bucket-${entry.bucket}`"
+                    :id="`spending-row-${entry.key}`"
                     class="spending-panel"
-                    :inert="closedBuckets.has(entry.bucket) || undefined"
+                    :inert="!isOpen(entry) || undefined"
                   >
-                    <ul class="spending-categories" :aria-label="`${entry.label} by category`">
+                    <ul
+                      v-if="entry.categories"
+                      class="spending-categories"
+                      :aria-label="`${entry.label} by category`"
+                    >
                       <li
                         v-for="category in entry.categories"
                         :key="category.category"
-                        :class="{ 'spending-open': openCategories.has(category.key) }"
+                        :class="{ 'spending-open': isOpen(category) }"
                       >
                         <button
                           type="button"
                           class="spending-legend-row spending-category-row"
-                          :aria-expanded="openCategories.has(category.key)"
-                          :aria-controls="`spending-category-${entry.bucket}-${category.category}`"
-                          @click="toggle(openCategories, category.key)"
+                          :aria-expanded="isOpen(category)"
+                          :aria-controls="`spending-category-${entry.key}-${category.category}`"
+                          @click="toggle(category)"
                         >
                           <span class="spending-legend-label">{{ category.label }}</span>
                           <span class="spending-legend-amount">
@@ -764,9 +791,9 @@ async function openPlaidLink() {
                           />
                         </button>
                         <div
-                          :id="`spending-category-${entry.bucket}-${category.category}`"
+                          :id="`spending-category-${entry.key}-${category.category}`"
                           class="spending-panel"
-                          :inert="!openCategories.has(category.key) || undefined"
+                          :inert="!isOpen(category) || undefined"
                         >
                           <ul
                             class="spending-transactions"
@@ -789,6 +816,27 @@ async function openPlaidLink() {
                             </li>
                           </ul>
                         </div>
+                      </li>
+                    </ul>
+                    <ul
+                      v-else
+                      class="spending-transactions"
+                      :aria-label="`${entry.label} transactions`"
+                    >
+                      <li
+                        v-for="transaction in entry.transactions"
+                        :key="transaction.transaction_id"
+                        class="spending-transaction-row"
+                      >
+                        <span class="spending-transaction-name">
+                          {{ transactionLabel(transaction) }}
+                        </span>
+                        <span class="spending-transaction-date">
+                          {{ formatTransactionDate(transaction.date) }}
+                        </span>
+                        <span class="spending-legend-amount">
+                          {{ formatBalance(transaction.amount) }}
+                        </span>
                       </li>
                     </ul>
                   </div>
@@ -1111,6 +1159,11 @@ h1 {
   /* Amounts line up with the category amounts, left of the chevron column. */
   padding: 0 1.5rem 0.25rem 0.75rem;
   list-style: none;
+}
+
+/* Without buckets, transactions sit right under a top row, so indent past its swatch too. */
+.spending-legend > li > .spending-panel > .spending-transactions {
+  padding-left: 1.875rem;
 }
 
 .spending-transaction-row {
